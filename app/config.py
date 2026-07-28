@@ -11,6 +11,8 @@ class Config:
     OPIK_PROJECT_NAME = os.getenv("OPIK_PROJECT_NAME")
     OPIK_API_KEY = os.getenv("OPIK_API_KEY")
     OPIK_WORKSPACE = os.getenv("OPIK_WORKSPACE")
+    QDRANT_API_KEY=os.getenv("QDRANT_API_KEY")
+    QDRANT_URL=os.getenv("QDRANT_URL")
     
     
 settings = Config()

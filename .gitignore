@@ -5,3 +5,8 @@ test_doc.txt
 .venv
 .python-version
 __pycache__/
+claude.md
+explore_data.py
+.python-version
+test_doc.txt
+faiss_index
