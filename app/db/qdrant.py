@@ -1,38 +1,59 @@
-from qdrant_client import AsyncQdrantClient
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams
+
 from app.config import settings
-import asyncio
 from app.core.llm import embeddings
 
-
-COLLECTION_NMAE = "Askit-docs"
-
-qdrant_client = AsyncQdrantClient(
+# timeout raised from the ~5s default: 4096-dim vector batches are large
+# uploads and Qdrant Cloud needs more time to accept them.
+qdrant_client = QdrantClient(
     api_key=settings.QDRANT_API_KEY,
-    url=settings.QDRANT_URL
+    url=settings.QDRANT_URL,
+    timeout=60,
 )
 
-async def get_qdrant() -> AsyncQdrantClient:
-   return  qdrant_client
 
-async def main():
-    # Test the connection using an async method
-    collections = await qdrant_client.get_collections()
-    print("vector db connected")
+def get_qdrant() -> QdrantClient:
+    return qdrant_client
 
-async def get_retriever(k: int = 3):
+
+def _ensure_collection() -> None:
+    """Create the collection if it doesn't exist yet.
+
+    Vector size must be declared up front. We get it by embedding one
+    probe string and measuring the result — so the size always matches
+    whatever embedding model is configured, with no hardcoded dimension.
+    COSINE distance is the standard for semantic text similarity.
     """
-    Connects to a pre-existing Qdrant Cloud Collection and
-    return a langchain retriever
-    """
+    existing = {c.name for c in qdrant_client.get_collections().collections}
+    if settings.QDRANT_COLLECTION not in existing:
+        vector_size = len(embeddings.embed_query("probe"))
+        qdrant_client.create_collection(
+            collection_name=settings.QDRANT_COLLECTION,
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        )
+        print(f"Created collection '{settings.QDRANT_COLLECTION}' (size={vector_size})")
 
-    vectorstore = QdrantVectorStore.from_existing_collection(
-        collection_name = COLLECTION_NMAE,
-        embedding = embeddings,
-        url = settings.QDRANT_URL,
-        api_key = settings.QDRANT_API_KEY
+
+def get_vectorstore() -> QdrantVectorStore:
+    """
+    Wrap the Qdrant collection as a LangChain VectorStore.
+    Creates the collection first if it doesn't exist yet.
+    No data is downloaded — search happens server-side on Qdrant.
+    """
+    _ensure_collection()
+    return QdrantVectorStore(
+        collection_name=settings.QDRANT_COLLECTION,
+        embedding=embeddings,
+        client=qdrant_client,
     )
-    
-    return vectorstore.as_retriever(search_kwargs={"k": k})
 
-if __name__ ==  "__main__":
-   asyncio.run(main())
+
+def get_retriever(k: int = 3):
+    return get_vectorstore().as_retriever(search_kwargs={"k": k})
+
+
+if __name__ == "__main__":
+    collections = qdrant_client.get_collections()
+    print("Connected. Collections:", [c.name for c in collections.collections])

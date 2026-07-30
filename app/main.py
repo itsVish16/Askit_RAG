@@ -1,51 +1,37 @@
-from fastapi import FastAPI
-from typing import TypedDict, List
-from pydantic import BaseModel
-from openai import OpenAI
-from app.config import settings
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
-from langgraph.graph import StateGraph, END
-from app.config import settings
 import os
-import opik
+from typing import TypedDict
+
+from fastapi import FastAPI
+from langgraph.graph import END, StateGraph
 from opik.integrations.langchain import OpikTracer
+from pydantic import BaseModel
+
+from app.config import settings
+from app.core.llm import llm
+from app.core.prompts import RAG_PROMPT
+from app.db.retrievers import get_hybrid_retriever
 
 os.environ["OPIK_PROJECT_NAME"] = settings.OPIK_PROJECT_NAME
 
+
 app = FastAPI()
+
+
+# k=10 (was 3): evals showed context_recall 0.29 — retrieval was
+# starved at k=3, so the LLM refused ~half the questions.
+retriever = get_hybrid_retriever(k=10)
+
 
 class UserInput(BaseModel):
     query: str
 
+
 class QueryResponse(BaseModel):
     answer: str
 
-llm = ChatOpenAI(
-    base_url=settings.FIREWORKS_BASE_URL,
-    api_key=settings.FIREWORKS_API_KEY,
-    model = settings.FIREWORKS_MODEL_NAME,
-)
 
+# graph construction
 
-
-embeddings  = OpenAIEmbeddings(
-    model = settings.FIREWORKS_MODEL_NAME_EMBED,
-    openai_api_base = settings.FIREWORKS_BASE_URL,
-    openai_api_key = settings.FIREWORKS_API_KEY,
-)
-
-vectorstore = FAISS.load_local(
-    "faiss_index",
-    embeddings,
-    allow_dangerous_deserialization=True
-)
-
-retriever = vectorstore.as_retriever(search_kwargs = {"k":3})
-
-
-#graph construction
 
 class GraphState(TypedDict):
     question: str
@@ -56,35 +42,25 @@ class GraphState(TypedDict):
 def retrieve_node(state: GraphState):
     print("-- Node: RETRIEVEING CONTEXT --")
     question = state["question"]
-
-
     docs = retriever.invoke(question)
+    context_list = [doc.page_content for doc in docs]
+    return {"context": context_list}
 
-    context_list = [doc.page_content for  doc in docs]
-
-    return {"context":context_list}
 
 def generate_node(state: GraphState):
     print("-- Node: GENERATING ANSWER --")
-    question = state["question"]
-    context = state["context"]
+    chain = RAG_PROMPT | llm
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "your are an assistant. Use the following context to answer the question: \n\n{context}"),
-        ("human", "{question}"),
-    ])
+    response = chain.invoke(
+        {"context": "\n\n".join(state["context"]), "question": state["question"]}
+    )
 
-    chain  = prompt | llm
+    return {"answer": response.content}
 
-    response = chain.invoke({"context" : "\n\n".join(context), "question": question})
-
-    return {"answer":response.content}
 
 workflow = StateGraph(GraphState)
-
 workflow.add_node("retrieve", retrieve_node)
 workflow.add_node("generate", generate_node)
-
 workflow.set_entry_point("retrieve")
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", END)
@@ -92,11 +68,11 @@ workflow.add_edge("generate", END)
 app_agent = workflow.compile()
 
 
-@app.post("/ask", response_model = QueryResponse)
-def ask_query(user_input: UserInput):
-    initial_state  = {"question":user_input.query}
+@app.post("/ask", response_model=QueryResponse)
+async def ask_query(user_input: UserInput):
     opik_tracer = OpikTracer()
-    result = app_agent.invoke(initial_state, config = {"callbacks": [opik_tracer]})
 
-
-    return QueryResponse(answer = result["answer"])
+    result = app_agent.invoke(
+        {"question": user_input.query}, config={"callbacks": [opik_tracer]}
+    )
+    return QueryResponse(answer=result["answer"])
