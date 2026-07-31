@@ -8,12 +8,13 @@ from opik.evaluation.metrics import (
     Hallucination,
 )
 
+from app.config import settings
 from app.main import app_agent
 
-# 1. Load 50 test questions, each with its ground-truth answer.
+# Load the test split — each item carries its ground-truth answer.
 # "expected_output" lets Opik score our answer AGAINST the real answer,
 # instead of only judging whether the answer sounds plausible.
-df = pd.read_parquet("data/ragbench/covidqa/test-00000-of-00001.parquet").head(50)
+df = pd.read_parquet(settings.EVAL_PARQUET_PATH).head(settings.EVAL_SAMPLE_SIZE)
 test_dataset = [
     {"input": row["question"], "expected_output": row["response"]}
     for _, row in df.iterrows()
@@ -24,45 +25,45 @@ def my_rag_task(dataset_item: dict):
     question = dataset_item["input"]
     print(f"\nEvaluating Question: {question}")
 
-    # Run our LangGraph agent!
-    initial_state = {"question": question}
-    final_state = app_agent.invoke(initial_state)
+    final_state = app_agent.invoke({"question": question})
 
-    # Return the exact format Opik expects to grade Faithfulness & Hallucination
+    # The exact format Opik expects to grade the metrics below.
     return {"output": final_state["answer"], "context": final_state["context"]}
 
 
 if __name__ == "__main__":
     print("Starting Automated Evals...")
     from opik import Opik
-    from opik.evaluation.models import LiteLLMChatModel  # <-- New import
-
-    from app.config import settings  # <-- Import settings
+    from opik.evaluation.models import LiteLLMChatModel
 
     client = Opik()
-    # One dataset per experiment, so runs never contaminate each other:
-    # "COVID-QA-hybrid" vs "COVID-QA-dense" — compare them side by side
-    # in the Opik dashboard.
-    dataset = client.get_or_create_dataset(name="COVID-QA-hybrid")
+    # One dataset per experiment, so runs never contaminate each other.
+    dataset = client.get_or_create_dataset(name=settings.EVAL_DATASET_NAME)
     dataset.clear()  # drop any stale items from previous runs
     dataset.insert(test_dataset)
 
-    # 1. Create a Custom Judge Model using our Fireworks API Key
+    # Judge: our Fireworks model, not OpenAI.
     custom_judge = LiteLLMChatModel(
         model_name=f"fireworks_ai/{settings.FIREWORKS_MODEL_NAME}",
         api_key=settings.FIREWORKS_API_KEY,
     )
 
-    # 2. Tell the metrics to use our Custom Judge instead of OpenAI!
+    # (GEval was rejected: it needs top_logprobs=20, Fireworks caps at 5.)
     hallucination_metric = Hallucination(model=custom_judge)
     relevance_metric = AnswerRelevance(model=custom_judge)
-    # Retrieval quality — the two metrics that consume "expected_output":
-    #   ContextRecall: did we retrieve everything the correct answer needs?
-    #   ContextPrecision: how much of what we retrieved is actually relevant?
-    # These are the headline numbers for the dense-vs-hybrid experiment.
-    # (GEval was rejected: it needs top_logprobs=20, Fireworks caps at 5.)
     context_recall = ContextRecall(model=custom_judge)
     context_precision = ContextPrecision(model=custom_judge)
+
+    # WARMUP: materialize heavy resources in THIS (main) process BEFORE
+    # evaluate() forks parallel workers. Children inherit the parent's
+    # memory via fork(), so the BM25 index + reranker load ONCE here
+    # instead of once per worker (~4GB total vs ~12GB, no OOM).
+    from app.db.retrievers import get_bm25_retriever, rerank_texts
+
+    print("Warming up BM25 index + reranker in main process...")
+    get_bm25_retriever(k=settings.K_RETRIEVE)  # BM25 corpus index into RAM
+    rerank_texts("warmup query", ["warmup document"], k_final=1)  # loads reranker
+    print("Warmup done.")
 
     evaluate(
         dataset=dataset,

@@ -7,15 +7,16 @@ from app.config import settings
 from app.db.qdrant import get_vectorstore
 
 
-def load_parquet_documents(file_path: str) -> list[Document]:
-    df = pd.read_parquet(file_path)
+def load_parquet_documents(file_path: str | None = None) -> list[Document]:
+    path = file_path or settings.INGEST_PARQUET_PATH
+    df = pd.read_parquet(path)
 
     docs: list[Document] = []
     for _, row in df.iterrows():
         for passage in row["documents"]:
             docs.append(Document(page_content=passage))
 
-    print(f"Loaded {len(docs)} raw passages form {file_path}")
+    print(f"Loaded {len(docs)} raw passages from {path}")
     return docs
 
 
@@ -31,14 +32,17 @@ def chunk_documents(docs: list[Document]) -> list[Document]:
     return chunks
 
 
-def embed_and_upsert(chunks: list[Document], batch_size: int = 16) -> None:
+def embed_and_upsert(
+    chunks: list[Document], batch_size: int | None = None
+) -> None:
     """Embed chunks and upsert to Qdrant in small batches.
 
-    Small batches (16) because each chunk carries a 4096-dim vector —
-    big batches exceed Qdrant Cloud's write timeout. If a batch still
-    times out, we recursively split it in half until it goes through,
-    so one slow request never kills the whole run.
+    Small batches: each chunk carries a 1024-dim vector and big batches
+    exceed Qdrant Cloud's write timeout. If a batch still times out, we
+    recursively split it in half until it goes through, so one slow
+    request never kills the whole run.
     """
+    batch_size = batch_size or settings.INGEST_BATCH_SIZE
     vectorstore = get_vectorstore()
     total = len(chunks)
 
@@ -58,7 +62,7 @@ def embed_and_upsert(chunks: list[Document], batch_size: int = 16) -> None:
 
 
 if __name__ == "__main__":
-    raw = load_parquet_documents("data/ragbench/covidqa/train-00000-of-00001.parquet")
+    raw = load_parquet_documents()
     chunks = chunk_documents(raw)
     embed_and_upsert(chunks)
     print("Collection is ready for retrieval.")

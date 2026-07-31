@@ -5,17 +5,12 @@ from qdrant_client.models import Distance, VectorParams
 from app.config import settings
 from app.core.llm import embeddings
 
-# timeout raised from the ~5s default: 4096-dim vector batches are large
-# uploads and Qdrant Cloud needs more time to accept them.
+# Shared client, reused across all retrievers.
 qdrant_client = QdrantClient(
     api_key=settings.QDRANT_API_KEY,
     url=settings.QDRANT_URL,
-    timeout=60,
+    timeout=settings.QDRANT_TIMEOUT,
 )
-
-
-def get_qdrant() -> QdrantClient:
-    return qdrant_client
 
 
 def _ensure_collection() -> None:
@@ -37,8 +32,8 @@ def _ensure_collection() -> None:
 
 
 def get_vectorstore() -> QdrantVectorStore:
-    """
-    Wrap the Qdrant collection as a LangChain VectorStore.
+    """Wrap the Qdrant collection as a LangChain VectorStore.
+
     Creates the collection first if it doesn't exist yet.
     No data is downloaded — search happens server-side on Qdrant.
     """

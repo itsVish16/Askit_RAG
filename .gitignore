@@ -1,12 +1,22 @@
+# Secrets
 .env
-faiss_index
-uv.lock
-test_doc.txt
+
+# Python / packaging
 .venv
 .python-version
 __pycache__/
+*.pyc
+.ruff_cache/
+uv.lock
+
+# Model caches (several GB; re-downloaded on demand)
+.cache/
+huggingface_cache/
+
+# Local data — RAGBench parquets are large; fetch from HF instead
+data/
+
+# Scratch / local notes
 claude.md
 explore_data.py
-.python-version
 test_doc.txt
-faiss_index
