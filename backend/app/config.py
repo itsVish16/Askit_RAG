@@ -86,6 +86,18 @@ class Config:
     # event loop (the whole file is read into RAM before spooling to disk).
     MAX_PDF_SIZE_MB = int(os.getenv("MAX_PDF_SIZE_MB", "25"))
     MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "10"))
+    # --- Latency optimization (smart routing + parallelism) ---
+    # Master switch for the router node. When disabled, the graph falls back
+    # to the original single-path pipeline (no caching, no complexity routing).
+    ROUTE_ENABLED = os.getenv("ROUTE_ENABLED", "true").lower() == "true"
+    # Chat-history similarity threshold (0.0–1.0). If the current question's
+    # fuzzy match score against a prior HumanMessage exceeds this, the router
+    # returns the cached answer and skips all retrieval + generation.
+    SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.85"))
+    # Override model for the router classifier (cheaper/faster model). Leave
+    # empty to reuse the main FIREWORKS_MODEL_NAME.
+    ROUTE_CLASSIFIER_MODEL = os.getenv("ROUTE_CLASSIFIER_MODEL", "")
+
     # Per-user upload cap: a user may keep at most this many completed PDFs.
     MAX_PDFS_PER_USER = int(os.getenv("MAX_PDFS_PER_USER", "5"))
     # PII redaction in persisted chat_history (the InMemorySaver checkpointer
@@ -107,8 +119,17 @@ class Config:
     # --- CORS (frontend origin) ---
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
+    # --- S3 (presigned URLs for direct upload) ---
+    # Bucket where uploaded files are stored before the worker processes them.
+    # When set, files are uploaded directly to S3 by the frontend (presigned
+    # URL) and the worker downloads from S3. Leave blank for local-disk upload.
+    S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "")
+    # Optional endpoint for Localstack-style dev/test.
+    S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "")
+    # Presigned URL expiry (seconds — 1 hour default).
+    S3_PRESIGN_EXPIRY = int(os.getenv("S3_PRESIGN_EXPIRY", "3600"))
+
     # --- Phase 4: async ingestion pipeline (SQS + in-process worker) ---
-    # Only ONE AWS service in this design — SQS. PDF bytes stay on local disk
     # (so no S3), job status is in a tiny sqlite file (so no DynamoDB), and
     # the worker is a daemon thread inside the FastAPI process (so no Lambda
     # / no ECS / no separate worker binary).
@@ -117,9 +138,8 @@ class Config:
     # blank, so dev on a laptop with `aws configure` doesn't need .env lines.
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
     AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-    # SQS queue URL + DLQ URL. Both required when INGEST_WORKER_ENABLED=true.
+    # SQS queue URL. Required when INGEST_WORKER_ENABLED=true.
     SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL", "")
-    SQS_DLQ_URL = os.getenv("SQS_DLQ_URL", "")
     # Visibility timeout must exceed the worst-case processing time for one
     # PDF (chunk + 1024-dim embed + Qdrant upsert). 10 min covers a 200-page
     # 1k-chunk PDF on a laptop CPU with retries.

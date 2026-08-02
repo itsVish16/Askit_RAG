@@ -1,4 +1,5 @@
 import os
+import threading
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.agent.graph import agent  # noqa: F401  (re-exported for back-compat imports)
 from app.api import ask, auth, eval, health, ingest
 from app.config import settings, validate_required_config
+from app.db.chat import flush_loop as chat_flush_loop
 from app.db.retrievers import get_bm25_retriever, rerank_texts
 from app.ingest_worker.runner import start_worker_thread, stop_worker_thread
 
@@ -44,6 +46,8 @@ async def lifespan(_: FastAPI):
         print(f"  [startup] Reranker warmup failed (non-fatal): {type(exc).__name__}: {exc}")
 
     start_worker_thread()
+    _chat_flush = threading.Thread(target=chat_flush_loop, daemon=True)
+    _chat_flush.start()
     print("Retrieval stack ready.")
     yield
     stop_worker_thread()

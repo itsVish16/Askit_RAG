@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import { useAuth } from "@/lib/auth";
 
 export default function RegisterPage() {
@@ -34,10 +35,12 @@ export default function RegisterPage() {
 
   return (
     <Shell>
-      <h1 className="text-2xl font-bold tracking-tight text-slate-900">Create your account</h1>
-      <p className="mt-1 text-sm text-slate-500">Upload PDFs and ask questions grounded on them.</p>
+      <div className="mb-6 text-center">
+        <h1 className="text-xl font-semibold text-slate-800">Create your account</h1>
+        <p className="mt-1 text-sm text-slate-500">Upload PDFs and ask questions grounded on them.</p>
+      </div>
 
-      <form onSubmit={submit} className="mt-8 space-y-5">
+      <form onSubmit={submit} className="space-y-4">
         <div>
           <label className="label" htmlFor="name">Name</label>
           <input id="name" type="text" required className="input" value={name}
@@ -54,7 +57,7 @@ export default function RegisterPage() {
             onChange={(e) => setPassword(e.target.value)} placeholder="at least 8 characters" />
         </div>
 
-        {err && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{err}</p>}
+        {err && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{err}</p>}
 
         <button type="submit" disabled={busy} className="btn-primary w-full">
           {busy ? "Creating…" : "Create account"}
@@ -63,7 +66,7 @@ export default function RegisterPage() {
 
       <p className="mt-6 text-center text-sm text-slate-500">
         Already have an account?{" "}
-        <Link href="/login" className="font-semibold text-brand-600 hover:text-brand-700">
+        <Link href="/login" className="font-medium text-brand-600 hover:text-brand-700">
           Sign in
         </Link>
       </p>
@@ -73,13 +76,13 @@ export default function RegisterPage() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand-50 via-slate-50 to-indigo-50 p-6">
-      <div className="w-full max-w-md">
-        <div className="mb-8 flex items-center justify-center gap-2">
-          <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-brand-500 to-indigo-500 shadow-glow" />
-          <span className="text-xl font-bold tracking-tight">Askit RAG</span>
+    <main className="flex min-h-screen items-center justify-center bg-surface-50 p-4">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 flex flex-col items-center gap-3">
+          <Image src="/logo.png" alt="Askit" width={64} height={43} priority />
+          <span className="text-lg font-semibold text-slate-700">Askit</span>
         </div>
-        <div className="card p-8">{children}</div>
+        <div className="card p-6">{children}</div>
       </div>
     </main>
   );

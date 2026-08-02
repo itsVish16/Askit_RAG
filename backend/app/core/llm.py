@@ -29,4 +29,5 @@ embeddings = OpenAIEmbeddings(
     api_key=settings.FIREWORKS_API_KEY,
     base_url=settings.FIREWORKS_BASE_URL,
     model=settings.EMBEDDING_MODEL_NAME,
+    check_embedding_ctx_length=False,  # required for non-OpenAI models (Qwen3 etc)
 )

@@ -62,7 +62,6 @@ def send_job(job_id: str, file_path: str, user_id: str, sha256: str, attempts: i
         resp = _sqs().send_message(
             QueueUrl=settings.SQS_QUEUE_URL,
             MessageBody=body,
-            VisibilityTimeout=settings.SQS_VISIBILITY_TIMEOUT_SEC,
         )
         return resp.get("MessageId", "")
     except ClientError as exc:

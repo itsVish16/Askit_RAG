@@ -20,6 +20,10 @@ huggingface_cache/
 # (sqlite dbs + uploads live here too, runtime-generated.)
 backend/data/
 
+# SQLite databases (chat history, auth, ingest status)
+*.sqlite
+*.sqlite-journal
+
 # Frontend
 frontend/node_modules/
 frontend/.next/

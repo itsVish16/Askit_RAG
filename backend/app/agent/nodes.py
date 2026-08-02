@@ -1,63 +1,118 @@
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+"""Single ReAct agent node — the entire pipeline.
+
+The agent has a `retrieve_docs` tool. It decides:
+- Answer directly from chat history / previous context (no tool call → ~4s)
+- Call retrieve_docs to search documents → then answer (~8-15s)
+
+This replaces the old multi-node pipeline (router → classify → retrieve → generate).
+"""
+
+import asyncio
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent.state import GraphState
+from app.agent.tools import retrieve_docs
 from app.config import settings
 from app.core.llm import llm
-from app.core.prompts import KEYWORD_EXTRACTION_PROMPT, MULTI_QUERY_PROMPT, RAG_PROMPT
-from app.core.redact import redact_pii
-from app.db.retrievers import (
-    bm25_candidates_from_keywords,
-    rerank_texts,
-    retrieve_candidates,
+
+_SYSTEM_PROMPT = (
+    "You are a research assistant. You have a retrieve_docs tool.\n\n"
+    "Default behavior: Call retrieve_docs for EVERY question to get "
+    "context from the user's documents. Do NOT answer without calling it.\n\n"
+    "Exception: If the user's question includes 'Here is the context I "
+    "found earlier', read that context. If it fully answers the question, "
+    "you may skip retrieve_docs. Otherwise, still call retrieve_docs.\n\n"
+    "After retrieve_docs: If relevant text was found, answer from it. "
+    "If nothing relevant was found, say you don't have context.\n"
+    "Never invent facts."
 )
 
-
-def multi_query_node(state: GraphState):
-    """Expand the question into N domain-aware variants for wider recall."""
-    chain = MULTI_QUERY_PROMPT | llm
-    response = chain.invoke({"question": state["question"], "n": settings.MULTI_QUERY_N})
-    variants = [line.strip() for line in response.content.splitlines() if line.strip()]
-    queries = [state["question"], *variants]  # keep original phrasing too
-    return {"queries": queries}
+_MAX_TOOL_CALLS = 3
 
 
-def keyword_node(state: GraphState):
-    """Extract entities/synonyms so BM25 gets tokens it can actually match."""
-    chain = KEYWORD_EXTRACTION_PROMPT | llm
-    response = chain.invoke({"question": state["question"]})
-    keywords = [line.strip() for line in response.content.splitlines() if line.strip()]
-    return {"keywords": keywords}
+async def react_agent_node(state: GraphState) -> dict:
+    """ReAct agent with a `retrieve_docs` tool.
 
+    The agent receives the question, chat history, and any previously retrieved
+    context. It decides whether to answer directly or call the tool first.
+    """
+    question = state["question"]
+    history = state.get("chat_history", []) or []
+    prev_context = state.get("context", []) or []
 
-def retrieve_node(state: GraphState):
-    """Pool dense + BM25 candidates from every variant, then rerank once."""
-    user_id = state.get("user_id")
-    pool: list[str] = []
+    # Patch the user_id into the tool so it scopes retrieval correctly.
+    retrieve_docs._user_id = state.get("user_id")
+    llm_w_tools = llm.bind_tools([retrieve_docs])
 
-    for q in state["queries"]:
-        pool.extend(retrieve_candidates(q, k_retrieve=settings.K_RETRIEVE, user_id=user_id))
-    pool.extend(
-        bm25_candidates_from_keywords(state["keywords"], k=settings.K_RETRIEVE, user_id=user_id)
-    )
+    # --- Build message list ---
+    messages: list = [SystemMessage(content=_SYSTEM_PROMPT)]
 
-    seen: set[str] = set()
-    pool = [t for t in pool if not (t in seen or seen.add(t))]
-    context_list = rerank_texts(state["question"], pool, k_final=settings.K_FINAL)
-    return {"context": context_list, "num_candidates": len(pool)}
+    # Inject previous context into the question itself (SystemMessages are
+    # treated as instructions by the LLM and often ignored; appending to the
+    # human message makes it part of the data the LLM reads).
+    if prev_context:
+        # Direct concatenation — no markers, no chunk labels.
+        context_text = "\n".join(prev_context)
+        augmented_question = f"{question}\n\nHere is the context I found earlier:\n{context_text}"
+    else:
+        augmented_question = question
 
+    # Chat history (prior Q&A turns).
+    messages.extend(history)
+    messages.append(HumanMessage(content=augmented_question))
 
-def generate_node(state: GraphState):
-    """Grounded answer over retrieved context, with chat history for follow-ups."""
-    chain = RAG_PROMPT | llm
-    history: list[BaseMessage] = state.get("chat_history", []) or []
-    response = chain.invoke(
-        {"context": "\n\n".join(state["context"]), "question": state["question"], "history": history}
-    )
+    # --- ReAct loop ---
+    raw_contexts: list[str] = []
+    tool_queries: list[str] = []
 
-    # Persist this turn into chat_history. PII is redacted BEFORE persistence
-    # so the checkpointer never stores verbatim PHI; the LLM saw the original.
-    persisted_question = (
-        redact_pii(state["question"]) if settings.REDACT_PII else state["question"]
-    )
-    new_turn = [HumanMessage(content=persisted_question), AIMessage(content=response.content)]
-    return {"answer": response.content, "chat_history": new_turn}
+    for attempt in range(_MAX_TOOL_CALLS):
+        # astream_events intercepts token callbacks even with invoke.
+        response = await asyncio.to_thread(llm_w_tools.invoke, messages)
+        messages.append(response)
+
+        if not response.tool_calls:
+            break  # Final answer — no more tool calls needed.
+
+        # Execute each tool call.
+        for tc in response.tool_calls:
+            if tc["name"] == "retrieve_docs":
+                query = tc["args"].get("query", "")
+                tool_queries.append(query)
+                result = await asyncio.to_thread(retrieve_docs.invoke, tc["args"])
+                raw_contexts.append(result)
+                messages.append(
+                    ToolMessage(content=result, tool_call_id=tc["id"])
+                )
+
+    # The last AIMessage is the final answer.
+    final: AIMessage | None = None
+    for m in reversed(messages):
+        if isinstance(m, AIMessage) and not m.tool_calls:
+            final = m
+            break
+
+    answer = final.content if final else ""
+
+    # Build chat_history for persistence — store raw turns (Human + AI).
+    # System messages and tool internals are ephemeral.
+    persisted = [
+        HumanMessage(content=question),
+        AIMessage(content=answer),
+    ]
+
+    # Preserve previous context when agent answered from history (no tool call).
+    # Without this, follow-ups lose all context and re-answer "don't know."
+    if not raw_contexts and prev_context:
+        preserved_context = prev_context
+    else:
+        preserved_context = raw_contexts
+
+    return {
+        "answer": answer,
+        "chat_history": persisted,
+        "context": preserved_context,
+        "queries": tool_queries,
+        "keywords": [],
+        "num_candidates": len(preserved_context),
+    }

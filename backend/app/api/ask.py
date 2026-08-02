@@ -1,8 +1,12 @@
+"""Ask endpoint (POST /ask) + streaming (POST /ask/stream) + chat history CRUD."""
+
+import json
 import time
 import uuid
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from opik.integrations.langchain import OpikTracer
 from pydantic import BaseModel, Field
 
@@ -10,17 +14,24 @@ from app.agent.graph import agent
 from app.api.deps import get_current_user
 from app.config import settings
 from app.core.security import UserPublic
+from app.db.chat import (
+    create_session,
+    delete_session as db_delete_session,
+    get_messages,
+    get_session,
+    get_sessions_by_user,
+    message_count,
+    queue_message,
+    update_session_title,
+)
 
 router = APIRouter()
 
-# In-process token-bucket rate limiter (per session_id, sliding 60s window).
-# Single uvicorn worker = single process, so an in-process dict is enough.
-# Swap for Redis when running multiple workers (Phase 5).
+# In-process token-bucket rate limiter.
 _session_hits: dict[str, list[float]] = defaultdict(list)
 
 
 def _check_rate_limit(session_id: str) -> None:
-    """Raise HTTP 429 if session_id exceeded MAX_RPM_PER_SESSION in the last minute."""
     now = time.time()
     window = 60.0
     hits = _session_hits[session_id]
@@ -40,11 +51,9 @@ def _check_rate_limit(session_id: str) -> None:
 
 
 class UserInput(BaseModel):
-    # Cap length: a bigger query blows the multi-query prompt budget and the
-    # persisted chat_history. Strip NUL/control bytes (keep \n for multi-line).
     query: str = Field(..., max_length=settings.MAX_QUERY_LEN)
-    session_id: str | None = None  # reuse to group a conversation under one Opik thread
-    user_id: str | None = None  # deprecated — retrieval is always scoped to the logged-in user
+    session_id: str | None = None
+    user_id: str | None = None  # deprecated — retrieval is always scoped to JWT user
 
     @classmethod
     def _normalize(cls, value: str) -> str:
@@ -64,19 +73,24 @@ class QueryResponse(BaseModel):
     num_candidates: int
 
 
+# ---------- standard (non-streaming) ask ----------
+
+
 @router.post("/ask", response_model=QueryResponse)
 async def ask_query(user_input: UserInput, current_user: UserPublic = Depends(get_current_user)):
     session_id = user_input.session_id or str(uuid.uuid4())
     _check_rate_limit(session_id)
 
-    # Retrieval is ALWAYS scoped to the logged-in user's uploaded PDFs — the
-    # client can't widen the scope. user_id from the JWT overrides any input.
     opik_tracer = OpikTracer(thread_id=session_id)
-    result = agent.invoke(
+    result = await agent.ainvoke(
         {"question": user_input.query, "user_id": current_user.id},
         config={"configurable": {"thread_id": session_id}, "callbacks": [opik_tracer]},
     )
     opik_tracer.flush()
+
+    # Persist turn to SQLite chat store.
+    _save_turn(session_id, current_user.id, user_input.query, result)
+
     return QueryResponse(
         answer=result["answer"],
         session_id=session_id,
@@ -85,3 +99,135 @@ async def ask_query(user_input: UserInput, current_user: UserPublic = Depends(ge
         context=result["context"],
         num_candidates=result["num_candidates"],
     )
+
+
+# ---------- streaming ask ----------
+
+
+@router.post("/ask/stream")
+async def ask_stream(user_input: UserInput, current_user: UserPublic = Depends(get_current_user)):
+    session_id = user_input.session_id or str(uuid.uuid4())
+    _check_rate_limit(session_id)
+
+    async def event_generator():
+        # Queue the human message immediately.
+        queue_message(session_id, "human", user_input.query)
+
+        # Send session event first so the client knows the id.
+        yield f"data: {json.dumps({'event': 'session', 'session_id': session_id})}\n\n"
+
+        full_answer = ""
+        tok_count = 0
+
+        # Stream events from the agent graph.
+        async for event in agent.astream_events(
+            {"question": user_input.query, "user_id": current_user.id},
+            config={"configurable": {"thread_id": session_id}},
+            version="v2",
+        ):
+            kind = event["event"]
+            if kind == "on_chat_model_stream":
+                chunk = event["data"].get("chunk")
+                if chunk and chunk.content and not chunk.tool_call_chunks:
+                    full_answer += chunk.content
+                    tok_count += 1
+                    if tok_count % 3 == 0:  # batch tokens for fewer SSE messages
+                        yield f"data: {json.dumps({'event': 'token', 'token': full_answer})}\n\n"
+
+        # Get the full final state from the checkpointer.
+        try:
+            state = await agent.aget_state({"configurable": {"thread_id": session_id}})
+            final_answer = (state.values.get("answer") or full_answer) if state else full_answer
+            ctx = state.values.get("context", []) if state else []
+            queries = state.values.get("queries", []) if state else []
+        except Exception:
+            final_answer = full_answer
+            ctx = []
+            queries = []
+
+        # Persist to SQLite.
+        result = {"answer": final_answer, "context": ctx, "queries": queries, "keywords": []}
+        _save_turn(session_id, current_user.id, user_input.query, result)
+
+        # Send the complete answer and done marker.
+        yield f"data: {json.dumps({'event': 'done', 'answer': final_answer, 'queries': queries, 'context': ctx})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ---------- chat history ----------
+
+
+class SessionOut(BaseModel):
+    id: str
+    user_id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class MessageOut(BaseModel):
+    id: int
+    session_id: str
+    role: str
+    content: str
+    context: str  # JSON string
+    queries: str  # JSON string
+    keywords: str  # JSON string
+    created_at: str
+
+
+@router.get("/chat/sessions", response_model=list[SessionOut])
+async def list_sessions(current_user: UserPublic = Depends(get_current_user)):
+    """List the current user's chat sessions (newest first)."""
+    return get_sessions_by_user(current_user.id)
+
+
+@router.get("/chat/session/{session_id}/messages", response_model=list[MessageOut])
+async def get_session_messages(session_id: str, current_user: UserPublic = Depends(get_current_user)):
+    """Get all messages for a session. Verifies ownership."""
+    sess = get_session(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    if sess["user_id"] != current_user.id:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return get_messages(session_id)
+
+
+@router.delete("/chat/session/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chat_session(session_id: str, current_user: UserPublic = Depends(get_current_user)):
+    """Delete a session and its messages. Verifies ownership."""
+    ok = db_delete_session(session_id, current_user.id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+
+# ---------- helpers ----------
+
+
+def _save_turn(session_id: str, user_id: str, question: str, result: dict) -> None:
+    """Persist a Q&A turn to the chat store and ensure the session exists."""
+    # Ensure session row exists.
+    sess = get_session(session_id)
+    if sess is None:
+        create_session(session_id, user_id, question[:80])
+    else:
+        # Update title from first question (if empty).
+        if not sess.get("title"):
+            update_session_title(session_id, question[:80])
+
+    # Queue messages for periodic flush.
+    queue_message(
+        session_id=session_id,
+        role="ai",
+        content=result.get("answer", ""),
+        context=result.get("context", []),
+        queries=result.get("queries", []),
+        keywords=result.get("keywords", []),
+    )
+
+
+# Keep the old DELETE for backward compat.
+@router.delete("/ask/session/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_session_old(session_id: str, current_user: UserPublic = Depends(get_current_user)):
+    await delete_chat_session(session_id, current_user)

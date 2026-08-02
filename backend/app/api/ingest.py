@@ -9,6 +9,7 @@ from app.api.deps import get_current_user
 from app.config import settings
 from app.core.security import UserPublic
 from app.db.ingestion import ingest_pdf
+from app.queue import s3 as s3_queue
 from app.queue import sqs
 from app.queue import status as ingest_status
 
@@ -188,3 +189,92 @@ async def ingest_status_endpoint(job_id: str, current_user: UserPublic = Depends
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
+
+
+class PresignIn(BaseModel):
+    filename: str = "upload.pdf"
+
+
+class PresignOut(BaseModel):
+    upload_url: str
+    file_key: str
+
+
+class S3IngestIn(BaseModel):
+    file_key: str
+    filename: str = "upload.pdf"
+
+
+_supported_mime: dict[str, str] = {
+    "pdf": "application/pdf",
+    "txt": "text/plain",
+    "md": "text/markdown",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+}
+
+
+@router.post("/ingest/presign", response_model=PresignOut)
+async def presign_upload(
+    body: PresignIn,
+    current_user: UserPublic = Depends(get_current_user),
+):
+    """Generate a presigned S3 PUT URL for direct frontend upload (no AWS
+    creds exposed). The frontend uploads the file to this URL, then calls
+    /ingest/s3 with the returned file_key to queue the job."""
+    if not s3_queue.is_configured():
+        raise HTTPException(status_code=400, detail="S3 not configured (S3_BUCKET_NAME is empty).")
+    ext = body.filename.rsplit(".", 1)[-1].lower() if "." in body.filename else "pdf"
+    mime = _supported_mime.get(ext, "application/octet-stream")
+    result = s3_queue.generate_presigned_upload(extension=ext, content_type=mime)
+    return PresignOut(**result)
+
+
+@router.post("/ingest/s3", response_model=IngestResponse)
+async def ingest_s3(
+    body: S3IngestIn,
+    current_user: UserPublic = Depends(get_current_user),
+):
+    """Queue an already-uploaded S3 file for processing. Call /ingest/presign
+    to get the upload URL, PUT the file there, then call this endpoint with
+    the returned file_key."""
+    if not s3_queue.is_configured():
+        raise HTTPException(status_code=400, detail="S3 not configured (S3_BUCKET_NAME is empty).")
+
+    # Validate the S3 object exists and meets size constraints.
+    obj = s3_queue.head_object(body.file_key)
+    if obj is None:
+        raise HTTPException(status_code=404, detail=f"S3 object '{body.file_key}' not found.")
+    max_bytes = settings.MAX_PDF_SIZE_MB * 1024 * 1024
+    if obj.get("ContentLength", 0) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Upload too large: > {settings.MAX_PDF_SIZE_MB} MB.")
+
+    uid = current_user.id
+    if ingest_status.count_user_completed_jobs(uid) >= settings.MAX_PDFS_PER_USER:
+        raise HTTPException(status_code=409, detail=f"Upload limit reached: {settings.MAX_PDFS_PER_USER} PDFs per user.")
+
+    # The S3 key is stored as an s3:// path so the worker knows to download
+    # from S3 instead of reading a local file.
+    s3_path = f"s3://{settings.S3_BUCKET_NAME}/{body.file_key}"
+    job_id, _, sha = _save_upload(b"", uid, body.filename.rsplit(".", 1)[-1] if "." in body.filename else "pdf")
+    # Overwrite the local file path with the S3 path; no local file was saved.
+    # We still call _save_upload for the job_id + sha generation.
+
+    if not sqs.is_configured():
+        # Inline fallback: download + process now.
+        temp_path = s3_queue.download_to_temp(body.file_key)
+        try:
+            result = ingest_pdf(temp_path, user_id=uid)
+        finally:
+            os.unlink(temp_path)
+        ingest_status.create_job(job_id=job_id, user_id=uid, file_path=s3_path, sha256=sha)
+        ingest_status.set_state(job_id, "COMPLETED" if result["status"] == "ok" else "FAILED", num_chunks=result["num_chunks"])
+        return IngestResponse(job_id=job_id, user_id=uid, state=result["status"], num_chunks=result["num_chunks"], file_path=s3_path)
+
+    ingest_status.create_job(job_id=job_id, user_id=uid, file_path=s3_path, sha256=sha)
+    try:
+        sqs.send_job(job_id=job_id, file_path=s3_path, user_id=uid, sha256=sha, attempts=0)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to enqueue ingest job: {type(exc).__name__}: {exc}")
+    return IngestResponse(job_id=job_id, user_id=uid, state="queued", num_chunks=None, file_path=s3_path)

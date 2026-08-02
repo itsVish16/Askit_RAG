@@ -62,10 +62,26 @@ MULTI_QUERY_PROMPT = ChatPromptTemplate.from_messages(
     [("system", MULTI_QUERY_SYSTEM_TEXT), ("human", MULTI_QUERY_HUMAN_TEMPLATE)]
 )
 
+# 4. Route classifier — decides whether to use fast or full path
+ROUTE_PROMPT_NAME = "askit-route-classifier"
+ROUTE_SYSTEM_TEXT = (
+    "You classify user questions for a RAG system. Reply with exactly one word.\n"
+    'Respond with "simple" if the question is a direct factual lookup that '
+    "a single document can answer.\n"
+    'Respond with "hard" if the question requires synthesis across multiple '
+    "documents, comparison, multi-step reasoning, or implicit inference.\n"
+    'Do not respond with anything else — no punctuation, no explanation.'
+)
+ROUTE_HUMAN_TEMPLATE = "{question}"
+ROUTE_PROMPT = ChatPromptTemplate.from_messages(
+    [("system", ROUTE_SYSTEM_TEXT), ("human", ROUTE_HUMAN_TEMPLATE)]
+)
+
 # Registry: Opik prompt name -> (system_text, human_template).
 # scripts/seed_prompts.py iterates this to create one versioned entry per prompt.
 PROMPT_SPECS = [
     (RAG_PROMPT_NAME, RAG_SYSTEM_TEXT, RAG_HUMAN_TEMPLATE),
     (KEYWORD_PROMPT_NAME, KEYWORD_SYSTEM_TEXT, KEYWORD_HUMAN_TEMPLATE),
     (MULTI_QUERY_PROMPT_NAME, MULTI_QUERY_SYSTEM_TEXT, MULTI_QUERY_HUMAN_TEMPLATE),
+    (ROUTE_PROMPT_NAME, ROUTE_SYSTEM_TEXT, ROUTE_HUMAN_TEMPLATE),
 ]

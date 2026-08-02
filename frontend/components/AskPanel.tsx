@@ -1,14 +1,30 @@
 "use client";
 
-import { useState } from "react";
-import { api, AskResponse, getSessionId, clearSessionId } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  getSessionId,
+  setSessionId,
+  askStream,
+  StreamEvent,
+  getMessages,
+  ChatMessage,
+} from "@/lib/api";
+import { newConversation } from "@/lib/sessions";
 
 interface Turn {
+  id: string;
   question: string;
   answer: string;
+  /** Streaming: answer built up token-by-token. */
+  isStreaming: boolean;
   context: string[];
   queries: string[];
-  keywords: string[];
+}
+
+let _turnId = 0;
+function nextId() {
+  _turnId += 1;
+  return `t${_turnId}`;
 }
 
 export default function AskPanel() {
@@ -16,120 +32,335 @@ export default function AskPanel() {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [showDetails, setShowDetails] = useState<Record<number, boolean>>({});
+  const [showDetails, setShowDetails] = useState<Record<string, boolean>>({});
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const aborter = useRef<AbortController | null>(null);
+
+  // Load messages from server on mount.
+  useEffect(() => {
+    const sid = getSessionId();
+    if (!sid) return;
+    getMessages(sid)
+      .then((msgs) => {
+        if (msgs.length === 0) return;
+        const loaded: Turn[] = [];
+        for (let i = 0; i < msgs.length; i += 2) {
+          const human = msgs[i];
+          const ai = msgs[i + 1];
+          if (human && human.role === "human") {
+            loaded.push({
+              id: nextId(),
+              question: human.content,
+              answer: ai?.content || "",
+              isStreaming: false,
+              context: ai?.context ? safeParseList(ai.context) : [],
+              queries: ai?.queries ? safeParseList(ai.queries) : [],
+            });
+          }
+        }
+        setTurns(loaded);
+        _turnId = loaded.length;
+      })
+      .catch(() => {});
+  }, []);
+
+  // Auto-scroll.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [turns]);
 
   async function ask(e: React.FormEvent) {
     e.preventDefault();
-    if (!query.trim()) return;
-    setBusy(true);
+    const q = query.trim();
+    if (!q || busy) return;
     setErr(null);
-    const q = query;
     setQuery("");
-    try {
-      const r = await api.post<AskResponse>("/ask", { query: q, session_id: getSessionId() });
-      setTurns((t) => [
-        ...t,
-        { question: q, answer: r.answer, context: r.context, queries: r.queries, keywords: r.keywords },
-      ]);
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : "Ask failed");
-      setQuery(q); // restore so the user can retry
-    } finally {
-      setBusy(false);
-    }
+
+    const turnId = nextId();
+    const newTurn: Turn = {
+      id: turnId,
+      question: q,
+      answer: "",
+      isStreaming: true,
+      context: [],
+      queries: [],
+    };
+
+    // Show user bubble + empty answer bubble immediately.
+    setTurns((prev) => [...prev, newTurn]);
+    setBusy(true);
+
+    const sid = getSessionId();
+
+    aborter.current = askStream(
+      q,
+      sid,
+      (evt: StreamEvent) => {
+        if (evt.event === "session" && evt.session_id) {
+          setSessionId(evt.session_id);
+        } else if (evt.event === "token" && evt.token) {
+          // Update the streaming answer text.
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === turnId ? { ...t, answer: evt.token || "" } : t
+            )
+          );
+        } else if (evt.event === "done") {
+          // Finalize the turn.
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === turnId
+                ? {
+                    ...t,
+                    answer: evt.answer || t.answer,
+                    isStreaming: false,
+                    context: evt.context || [],
+                    queries: evt.queries || [],
+                  }
+                : t
+            )
+          );
+          setBusy(false);
+          window.dispatchEvent(new CustomEvent("askit:session-updated"));
+        }
+      },
+      (error: Error) => {
+        setErr(error.message);
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.id === turnId ? { ...t, isStreaming: false } : t
+          )
+        );
+        setBusy(false);
+        window.dispatchEvent(new CustomEvent("askit:session-updated"));
+      },
+      () => {
+        setBusy(false);
+      }
+    );
   }
 
-  function newConversation() {
-    clearSessionId();
+  function handleNewConversation() {
+    if (aborter.current) aborter.current.abort();
+    newConversation();
     setTurns([]);
     setErr(null);
+    setShowDetails({});
+    _turnId = 0;
   }
 
   return (
     <div className="flex h-full flex-col">
-      <div className="mb-4 flex items-center justify-between">
+      {/* header */}
+      <div className="flex items-center justify-between pb-3">
         <div>
-          <h2 className="text-lg font-semibold text-slate-900">Ask</h2>
-          <p className="text-sm text-slate-500">Questions are grounded on your uploaded documents.</p>
+          <h2 className="text-base font-semibold text-slate-800">Ask</h2>
+          <p className="text-sm text-slate-500">
+            Questions grounded on your uploaded documents.
+          </p>
         </div>
         {turns.length > 0 && (
-          <button onClick={newConversation} className="btn-ghost">New conversation</button>
+          <button onClick={handleNewConversation} className="btn-ghost text-xs">
+            New conversation
+          </button>
         )}
       </div>
 
-      <div className="card flex-1 overflow-y-auto p-5">
-        {turns.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-center text-sm text-slate-400">
-            Ask your first question below.
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {turns.map((t, i) => (
-              <div key={i} className="space-y-3">
+      {/* error */}
+      {err && (
+        <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">
+          {err}
+        </p>
+      )}
+
+      {/* chat area */}
+      <div className="card flex-1 overflow-y-auto">
+        <div className="flex flex-col gap-4 p-4 sm:p-6">
+          {turns.length === 0 ? (
+            <div className="flex h-full min-h-[24rem] items-center justify-center text-center text-sm text-slate-400">
+              Ask a question to get started.
+            </div>
+          ) : (
+            turns.map((t) => (
+              <div key={t.id} className="space-y-2">
+                {/* user bubble */}
                 <div className="flex justify-end">
-                  <span className="max-w-[80%] rounded-2xl bg-brand-600 px-4 py-2.5 text-sm text-white">
+                  <div className="max-w-[75%] rounded-lg bg-brand-600 px-4 py-2.5 text-sm text-white leading-relaxed">
                     {t.question}
-                  </span>
-                </div>
-                <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-800 whitespace-pre-wrap">
-                  {t.answer}
-                </div>
-                <button
-                  onClick={() => setShowDetails((s) => ({ ...s, [i]: !s[i] }))}
-                  className="text-xs font-medium text-brand-600 hover:text-brand-700"
-                >
-                  {showDetails[i] ? "Hide retrieval details" : `Show retrieval details (${t.context.length} chunks)`}
-                </button>
-                {showDetails[i] && (
-                  <div className="space-y-3 rounded-xl bg-slate-50 p-4 text-xs">
-                    <Detail label="Expanded queries" items={t.queries} />
-                    <Detail label="Keywords" items={t.keywords} />
-                    <div>
-                      <p className="mb-1 font-semibold text-slate-600">Context chunks</p>
-                      <ol className="list-decimal space-y-1 pl-5 text-slate-500">
-                        {t.context.map((c, ci) => (
-                          <li key={ci} className="leading-relaxed">{c}</li>
-                        ))}
-                      </ol>
-                    </div>
                   </div>
-                )}
+                </div>
+
+                {/* answer bubble */}
+                <div>
+                  {t.isStreaming && !t.answer ? (
+                    /* typing indicator while waiting for first tokens */
+                    <div className="flex items-start gap-2">
+                      <div className="rounded-lg bg-surface-50 px-4 py-3">
+                        <span className="dot" />
+                        <span className="dot" />
+                        <span className="dot" />
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="rounded-lg bg-surface-50 px-4 py-3 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">
+                        {t.answer}
+                        {t.isStreaming && <span className="cursor-blink" />}
+                      </div>
+
+                      {/* retrieval details */}
+                      {!t.isStreaming && t.queries.length > 0 && (
+                        <button
+                          onClick={() =>
+                            setShowDetails((s) => ({
+                              ...s,
+                              [t.id]: !s[t.id],
+                            }))
+                          }
+                          className="mt-1 text-xs font-medium text-brand-600 hover:text-brand-700"
+                        >
+                          {showDetails[t.id]
+                            ? "Hide retrieval details"
+                            : `Show retrieval details (${t.context.length} chunks)`}
+                        </button>
+                      )}
+                      {showDetails[t.id] && !t.isStreaming && (
+                        <div className="mt-2 space-y-2 rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs">
+                          {t.queries.length > 0 && (
+                            <div>
+                              <p className="mb-1 font-medium text-slate-600">
+                                Search queries
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {t.queries.map((x, ci) => (
+                                  <span
+                                    key={ci}
+                                    className="rounded bg-white px-2 py-0.5 text-slate-600 ring-1 ring-surface-200"
+                                  >
+                                    {x}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {t.context.length > 0 && (
+                            <div>
+                              <p className="mb-1 font-medium text-slate-600">
+                                Context chunks
+                              </p>
+                              <ol className="list-decimal space-y-1 pl-5 text-slate-500">
+                                {t.context.map((c, ci) => (
+                                  <li key={ci} className="leading-relaxed">
+                                    {c}
+                                  </li>
+                                ))}
+                              </ol>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
-            ))}
-          </div>
-        )}
+            ))
+          )}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
-      {err && <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{err}</p>}
-
-      <form onSubmit={ask} className="mt-4 flex gap-3">
+      {/* input — send button text always "Send" with optional spinner */}
+      <form onSubmit={ask} className="mt-3 flex gap-2">
         <input
+          ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Ask a question about your documents…"
           className="input"
           disabled={busy}
         />
-        <button type="submit" disabled={busy || !query.trim()} className="btn-primary shrink-0">
-          {busy ? "Thinking…" : "Send"}
+        <button
+          type="submit"
+          disabled={busy || !query.trim()}
+          className="btn-primary shrink-0"
+        >
+          {busy && (
+            <svg
+              className="h-4 w-4 animate-spin"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              />
+            </svg>
+          )}
+          Send
         </button>
       </form>
+
+      <style jsx>{`
+        .dot {
+          display: inline-block;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #94a3b8;
+          margin-right: 3px;
+          animation: blink 1.4s infinite both;
+        }
+        .dot:nth-child(2) {
+          animation-delay: 0.2s;
+        }
+        .dot:nth-child(3) {
+          animation-delay: 0.4s;
+        }
+        @keyframes blink {
+          0%,
+          80%,
+          100% {
+            opacity: 0.3;
+          }
+          40% {
+            opacity: 1;
+          }
+        }
+        .cursor-blink::after {
+          content: "▊";
+          animation: pulse 1s infinite;
+          color: #6366f1;
+          margin-left: 1px;
+        }
+        @keyframes pulse {
+          0%,
+          100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0;
+          }
+        }
+      `}</style>
     </div>
   );
 }
 
-function Detail({ label, items }: { label: string; items: string[] }) {
-  if (items.length === 0) return null;
-  return (
-    <div>
-      <p className="mb-1 font-semibold text-slate-600">{label}</p>
-      <div className="flex flex-wrap gap-1.5">
-        {items.map((x, i) => (
-          <span key={i} className="rounded-md bg-white px-2 py-0.5 text-slate-600 ring-1 ring-slate-200">
-            {x}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
+function safeParseList(raw: string): string[] {
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
 }

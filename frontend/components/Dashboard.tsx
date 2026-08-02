@@ -1,96 +1,219 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { useAuth } from "@/lib/auth";
+import { getSessionId, setSessionId } from "@/lib/api";
 import EvalPanel from "./EvalPanel";
 import DocumentsPanel from "./DocumentsPanel";
 import AskPanel from "./AskPanel";
+import ChatHistory from "./ChatHistory";
 
 type Tab = "experiment" | "documents" | "ask";
 
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: "experiment", label: "Experiment", icon: "📊" },
-  { id: "documents", label: "Documents", icon: "📄" },
-  { id: "ask", label: "Ask", icon: "💬" },
+const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
+  {
+    id: "experiment",
+    label: "Experiment",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-4 0v-5" />
+        <path d="M12 12h.01" />
+        <path d="M2 14h4" />
+        <path d="M8 6h8" />
+        <path d="M8 10h4" />
+        <path d="M8 14h8" />
+        <path d="M10 18h4" />
+      </svg>
+    ),
+  },
+  {
+    id: "documents",
+    label: "Documents",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+        <line x1="16" y1="13" x2="8" y2="13" />
+        <line x1="16" y1="17" x2="8" y2="17" />
+        <polyline points="10 9 9 9 8 9" />
+      </svg>
+    ),
+  },
+  {
+    id: "ask",
+    label: "Ask",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        <line x1="9" y1="10" x2="15" y2="10" />
+        <line x1="12" y1="7" x2="12" y2="13" />
+      </svg>
+    ),
+  },
 ];
 
 export default function Dashboard() {
   const { user, loading, logout } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("experiment");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
 
+  // Refresh chat history when AskPanel dispatches a session-updated event.
+  useEffect(() => {
+    const handler = () => setSessionRefreshKey((k) => k + 1);
+    window.addEventListener("askit:session-updated", handler);
+    return () => window.removeEventListener("askit:session-updated", handler);
+  }, []);
+
+  // Session switching: when a chat history item is clicked.
+  const handleSessionSelect = useCallback(
+    (sessionId: string) => {
+      setSessionId(sessionId);
+      // Bump refresh key so AskPanel re-reads turns from localStorage.
+      setSessionRefreshKey((k) => k + 1);
+    },
+    []
+  );
+
   if (loading || !user) {
     return (
       <main className="flex min-h-screen items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-brand-600" />
+        <div className="flex flex-col items-center gap-3">
+          <Image
+            src="/logo-small.png"
+            alt="Askit"
+            width={48}
+            height={32}
+            priority
+          />
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-surface-300 border-t-brand-600" />
+        </div>
       </main>
     );
   }
 
   return (
     <div className="flex min-h-screen">
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-slate-200 bg-white p-5 sm:flex">
-        <div className="mb-8 flex items-center gap-2">
-          <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-brand-500 to-indigo-500 shadow-glow" />
-          <span className="text-lg font-bold tracking-tight">Askit</span>
+      {/* Desktop sidebar */}
+      <aside className="hidden w-56 shrink-0 flex-col border-r border-surface-200 bg-white sm:flex">
+        <div className="flex items-center gap-3 border-b border-surface-100 px-5 py-4">
+          <Image
+            src="/logo.png"
+            alt="Askit"
+            width={36}
+            height={24}
+            className="shrink-0"
+          />
+          <span className="text-base font-semibold tracking-tight text-slate-800">
+            Askit
+          </span>
         </div>
 
-        <nav className="flex-1 space-y-1">
+        <nav className="space-y-0.5 p-3">
           {TABS.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition ${
+              className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
                 tab === t.id
-                  ? "bg-brand-50 text-brand-700"
-                  : "text-slate-600 hover:bg-slate-100"
+                  ? "bg-brand-50 text-brand-700 font-medium"
+                  : "text-slate-600 hover:bg-surface-50"
               }`}
             >
-              <span className="text-base">{t.icon}</span>
+              <span
+                className={tab === t.id ? "text-brand-600" : "text-slate-400"}
+              >
+                {t.icon}
+              </span>
               {t.label}
             </button>
           ))}
         </nav>
 
-        <div className="mt-4 border-t border-slate-100 pt-4">
-          <div className="mb-3 truncate text-sm">
+        {/* Chat history — always visible so users can see conversations from any tab */}
+        <ChatHistory
+          activeSessionId={getSessionId()}
+          onSelect={handleSessionSelect}
+          refreshKey={sessionRefreshKey}
+        />
+
+        <div className="mt-auto border-t border-surface-100 p-3">
+          <div className="mb-2 truncate px-1 text-sm">
             <p className="truncate font-medium text-slate-800">{user.name}</p>
             <p className="truncate text-xs text-slate-400">{user.email}</p>
           </div>
-          <button onClick={logout} className="btn-ghost w-full">Sign out</button>
+          <button onClick={logout} className="btn-ghost w-full justify-start text-xs">
+            Sign out
+          </button>
         </div>
       </aside>
 
-      {/* Mobile tab bar */}
-      <div className="fixed bottom-0 left-0 right-0 z-10 flex border-t border-slate-200 bg-white sm:hidden">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`flex flex-1 flex-col items-center py-2 text-xs ${
-              tab === t.id ? "text-brand-600" : "text-slate-500"
-            }`}
-          >
-            <span className="text-lg">{t.icon}</span>
-            {t.label}
-          </button>
-        ))}
+      {/* Mobile header + sidebar overlay */}
+      <div className="fixed top-0 left-0 right-0 z-20 flex items-center gap-3 border-b border-surface-200 bg-white px-4 py-3 sm:hidden">
+        <button onClick={() => setSidebarOpen(true)} className="text-slate-600">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6" />
+            <line x1="3" y1="12" x2="21" y2="12" />
+            <line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+        </button>
+        <Image src="/logo.png" alt="Askit" width={24} height={16} />
+        <span className="text-sm font-semibold text-slate-800">Askit</span>
       </div>
 
-      <main className="flex-1 overflow-y-auto p-6 pb-20 sm:pb-6 sm:p-8">
-        <div className="mx-auto max-w-5xl">
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-30 sm:hidden">
+          <div className="absolute inset-0 bg-black/20" onClick={() => setSidebarOpen(false)} />
+          <aside className="relative flex h-full w-56 flex-col bg-white shadow-elevated">
+            <div className="flex items-center justify-between border-b border-surface-100 px-5 py-4">
+              <span className="text-base font-semibold text-slate-800">Askit</span>
+              <button onClick={() => setSidebarOpen(false)} className="text-slate-400">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <nav className="flex-1 space-y-0.5 p-3">
+              {TABS.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => { setTab(t.id); setSidebarOpen(false); }}
+                  className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
+                    tab === t.id
+                      ? "bg-brand-50 text-brand-700 font-medium"
+                      : "text-slate-600 hover:bg-surface-50"
+                  }`}
+                >
+                  <span className={tab === t.id ? "text-brand-600" : "text-slate-400"}>{t.icon}</span>
+                  {t.label}
+                </button>
+              ))}
+            </nav>
+            <div className="border-t border-surface-100 p-3">
+              <button onClick={() => { logout(); setSidebarOpen(false); }} className="btn-ghost w-full justify-start text-xs">
+                Sign out
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+
+      <main className="flex-1 overflow-y-auto pt-14 sm:pt-0">
+        <div className="mx-auto max-w-5xl p-4 sm:p-8">
+          {/* Always render AskPanel — hidden class preserves its state across tab switches */}
+          <div className={tab === "ask" ? "h-[calc(100vh-6rem)] sm:h-[calc(100vh-4rem)]" : "hidden"}>
+            <AskPanel key={sessionRefreshKey} />
+          </div>
           {tab === "experiment" && <EvalPanel />}
           {tab === "documents" && <DocumentsPanel />}
-          {tab === "ask" && (
-            <div className="h-[calc(100vh-7rem)] sm:h-[calc(100vh-5rem)]">
-              <AskPanel />
-            </div>
-          )}
         </div>
       </main>
     </div>
