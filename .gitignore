@@ -1,5 +1,6 @@
 # Secrets
 .env
+backend/.env
 
 # Python / packaging
 .venv
@@ -7,16 +8,25 @@
 __pycache__/
 *.pyc
 .ruff_cache/
-uv.lock
+.pytest_cache/
+
+# Lockfile IS tracked (uv.lock should be committed).
 
 # Model caches (several GB; re-downloaded on demand)
 .cache/
 huggingface_cache/
 
-# Local data — RAGBench parquets are large; fetch from HF instead
-data/
+# Local data — RAGBench parquets are large; fetch from HF instead.
+# (sqlite dbs + uploads live here too, runtime-generated.)
+backend/data/
 
-# Scratch / local notes
-claude.md
-explore_data.py
-test_doc.txt
+# SQLite databases (chat history, auth, ingest status)
+*.sqlite
+*.sqlite-journal
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.env
+frontend/.env.local
+frontend/next-env.d.ts
