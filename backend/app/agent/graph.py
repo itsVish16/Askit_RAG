@@ -1,24 +1,36 @@
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 
-from app.agent.nodes import react_agent_node
+from app.agent.nodes import chitchat_node, rag_agent_node, router_node
 from app.agent.state import GraphState
 
-# Single-agent graph:
-#
-#   react_agent_node (LLM + retrieve_docs tool)
-#     ├─ answers directly from history/context → END  (~4s)
-#     └─ calls retrieve_docs → gets context → answers → END  (~8-15s)
-#
-# Tool calls are handled inside the agent node via a ReAct loop (up to 3
-# turns). No separate ToolNode or conditional edges needed.
-#
-# In-memory checkpointer keyed by thread_id (= API session_id) gives short-term
-# chat memory within a conversation. Lost on restart by design.
+
+def route_after_router(state: GraphState) -> str:
+    """Read the routing decision from the state and branch the graph."""
+    decision = state.get("route", "rag")
+    if decision == "chitchat":
+        return "chitchat"
+    return "rag"
+
 
 _workflow = StateGraph(GraphState)
-_workflow.add_node("agent", react_agent_node)
-_workflow.set_entry_point("agent")
-_workflow.add_edge("agent", END)
+
+_workflow.add_node("router", router_node)
+_workflow.add_node("chitchat", chitchat_node)
+_workflow.add_node("rag", rag_agent_node)
+
+_workflow.set_entry_point("router")
+
+_workflow.add_conditional_edges(
+    "router",
+    route_after_router,
+    {
+        "rag": "rag",
+        "chitchat": "chitchat",
+    },
+)
+
+_workflow.add_edge("rag", END)
+_workflow.add_edge("chitchat", END)
 
 agent = _workflow.compile(checkpointer=InMemorySaver())

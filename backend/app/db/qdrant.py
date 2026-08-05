@@ -1,5 +1,5 @@
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
+from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from qdrant_client import AsyncQdrantClient, QdrantClient, models
 from qdrant_client.models import (
     Distance,
     FieldCondition,
@@ -11,8 +11,17 @@ from qdrant_client.models import (
 
 from app.config import settings
 from app.core.llm import embeddings
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 qdrant_client = QdrantClient(
+    api_key=settings.QDRANT_API_KEY,
+    url=settings.QDRANT_URL,
+    timeout=settings.QDRANT_TIMEOUT,
+)
+
+async_qdrant_client = AsyncQdrantClient(
     api_key=settings.QDRANT_API_KEY,
     url=settings.QDRANT_URL,
     timeout=settings.QDRANT_TIMEOUT,
@@ -32,8 +41,13 @@ def _ensure_collection() -> None:
         qdrant_client.create_collection(
             collection_name=settings.QDRANT_COLLECTION,
             vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+            sparse_vectors_config={
+                "sparse": models.SparseVectorParams(
+                    index=models.SparseIndexParams(on_disk=False)
+                )
+            },
         )
-        print(f"Created collection '{settings.QDRANT_COLLECTION}' (size={vector_size})")
+        logger.info(f"Created collection '{settings.QDRANT_COLLECTION}' with dense/sparse vectors")
     _ensure_user_id_index()
 
 
@@ -50,22 +64,37 @@ def _ensure_user_id_index() -> None:
             field_name="metadata.user_id",
             field_schema=PayloadSchemaType.KEYWORD,
         )
-        print("Ensured payload index on metadata.user_id (keyword).")
+        logger.info("Ensured payload index on metadata.user_id (keyword).")
     except Exception as exc:
         # 409 = already exists, fine; anything else just log so a transient
         # startup issue doesn't crash the app.
         if "already exists" not in str(exc) and "409" not in str(exc):
-            print(f"Skipping user_id index creation: {exc}")
+            logger.warning(f"Skipping user_id index creation: {exc}")
     _user_id_index_ensured = True
+
+
+from langchain_classic.embeddings import CacheBackedEmbeddings
+from langchain_classic.storage import LocalFileStore
 
 
 def get_vectorstore() -> QdrantVectorStore:
     """Wrap the Qdrant collection as a LangChain VectorStore (creates the
     collection first if needed). Search runs server-side on Qdrant."""
     _ensure_collection()
+    sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
+    
+    # 1. Setup LocalFileStore for embeddings cache
+    store = LocalFileStore("data/embedding_cache")
+    cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
+        embeddings, store, namespace=settings.EMBEDDING_MODEL_NAME
+    )
+    
     return QdrantVectorStore(
         collection_name=settings.QDRANT_COLLECTION,
-        embedding=embeddings,
+        embedding=cached_embeddings,
+        sparse_embedding=sparse_embeddings,
+        sparse_vector_name="sparse",
+        retrieval_mode=RetrievalMode.HYBRID,
         client=qdrant_client,
     )
 
@@ -94,4 +123,4 @@ def get_filtered_retriever(k: int, user_id: str):
 
 if __name__ == "__main__":
     collections = qdrant_client.get_collections()
-    print("Connected. Collections:", [c.name for c in collections.collections])
+    logger.info(f"Connected. Collections: {[c.name for c in collections.collections]}")

@@ -1,42 +1,73 @@
-"""ReAct agent tool: `retrieve_docs` — the agent calls this when it needs
-fresh context from the user's uploaded documents.
+"""Async document retrieval tools."""
 
-The tool is a regular LangChain tool decorated with @tool. The user_id is
-patched onto the function object before each graph invocation so the tool
-scopes retrieval to the logged-in user's chunks.
-"""
-
-from langchain_core.tools import tool
+import asyncio
+from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.db.retrievers import _dense_safe, get_user_bm25_retriever, rerank_texts
+from app.core.llm import llm
+from app.core.prompts import SEARCH_EXPANSION_PROMPT
+from app.db.retrievers import bm25_candidates_from_keywords, rerank_texts, retrieve_candidates
 
 
-@tool
-def retrieve_docs(query: str) -> str:
-    """Search the user's uploaded documents for relevant information.
+class SearchExpansion(BaseModel):
+    is_complex: bool = Field(description="True if the query is complex and requires multi-query expansion. False if it's a simple query.")
+    keywords: list[str] = Field(description="5-8 specific keywords, entities, and synonyms for lexical search.")
+    variants: list[str] = Field(description="If is_complex is True, generate 3 alternative versions of the question. If False, leave empty.")
 
-    Call this when you need fresh context to answer the user's question.
-    Formulate a precise search query that captures the key information needed.
-    Returns up to 5 relevant document chunks.
-    """
-    user_id = getattr(retrieve_docs, "_user_id", None)
+async def generate_search_expansion(query: str) -> SearchExpansion:
+    """Uses the LLM to analyze query complexity, generate keywords, and optionally generate multi-query variants in one call."""
+    res = await llm.with_structured_output(SearchExpansion).with_config(tags=["internal_tool"]).ainvoke(
+        SEARCH_EXPANSION_PROMPT.format_messages(question=query)
+    )
+    return res
+
+async def retrieve_docs_async(query: str, user_id: str | None) -> tuple[str, list[str], list[str]]:
+    """Search the user's uploaded documents for relevant information concurrently."""
     if not user_id:
-        return "No documents available (user not set)."
+        return "No documents available (user not set).", [query], []
 
     k = settings.K_RETRIEVE
 
-    # Dense + BM25 in parallel (via to_thread in the caller).
-    dense_docs = _dense_safe(query, k=k, user_id=user_id)
-    bm25 = get_user_bm25_retriever(user_id, k=k)
-    bm25_docs = bm25.invoke(query) if bm25 else []
+    # 1. Expand query and extract keywords in a single structured call
+    expansion = await generate_search_expansion(query)
+    
+    # Extract keywords
+    keywords = [k.strip() for k in expansion.keywords if k.strip()]
+    
+    # 2. Determine queries to search
+    all_queries = [query]
+    if expansion.is_complex and expansion.variants:
+        # Take up to MULTI_QUERY_N variants
+        variants = expansion.variants[:settings.MULTI_QUERY_N]
+        # Ensure original query is in variants and deduplicate
+        all_queries = list(dict.fromkeys([query] + variants))
 
-    pool = list({d.page_content for d in list(dense_docs) + list(bm25_docs)})
-    reranked = rerank_texts(query, pool, settings.K_FINAL)
-
+    # 3. Retrieve candidates for all queries and keywords concurrently
+    tasks = []
+    for q in all_queries:
+        tasks.append(asyncio.create_task(retrieve_candidates(q, k, user_id)))
+    
+    if keywords:
+        tasks.append(asyncio.create_task(bm25_candidates_from_keywords(keywords, k, user_id)))
+        
+    results = await asyncio.gather(*tasks)
+    
+    # 4. Deduplicate
+    pool = set()
+    for res in results:
+        for chunk in res:
+            pool.add(chunk)
+            
+    pool_list = list(pool)
+    
+    # 5. Rerank
+    reranked = await asyncio.to_thread(rerank_texts, query, pool_list, settings.K_FINAL)
+    
     if not reranked:
-        return "No relevant documents found."
+        return "No relevant documents found.", all_queries, keywords
 
-    return "\n\n---\n\n".join(
+    context_text = "\n\n---\n\n".join(
         f"Chunk {i + 1}: {chunk}" for i, chunk in enumerate(reranked)
     )
+    
+    return context_text, all_queries, keywords

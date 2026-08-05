@@ -39,11 +39,11 @@ export default function EvalPanel() {
       <div>
         <div className="mb-6">
           <div className="h-5 w-48 animate-pulse rounded bg-surface-200" />
-          <div className="mt-1 h-4 w-64 animate-pulse rounded bg-surface-100" />
+          <div className="mt-1 h-4 w-64 animate-pulse rounded bg-zinc-100" />
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="card h-28 animate-pulse bg-surface-50" />
+            <div key={i} className="card h-28 animate-pulse bg-zinc-50" />
           ))}
         </div>
       </div>
@@ -53,14 +53,14 @@ export default function EvalPanel() {
   if (status === "empty") {
     return (
       <div className="card flex flex-col items-center justify-center py-12 text-center">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 text-slate-300">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 text-zinc-300">
           <path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-4 0v-5" />
           <path d="M12 12h.01" />
           <path d="M2 14h4" />
         </svg>
-        <h3 className="text-base font-medium text-slate-700">No eval run yet</h3>
-        <p className="mt-1 text-sm text-slate-500">Run the COVID-QA eval on the backend:</p>
-        <pre className="mt-3 rounded-md bg-slate-900 px-4 py-2 text-sm text-slate-100">uv run python -m app.evaluation.evals</pre>
+        <h3 className="text-base font-medium text-zinc-700">No eval run yet</h3>
+        <p className="mt-1 text-sm text-zinc-500">Run the COVID-QA eval on the backend:</p>
+        <pre className="mt-3 rounded-md bg-zinc-900 px-4 py-2 text-sm text-zinc-100">uv run python -m app.evaluation.evals</pre>
       </div>
     );
   }
@@ -68,13 +68,13 @@ export default function EvalPanel() {
   if (status === "error") {
     return (
       <div className="card flex flex-col items-center justify-center py-12 text-center">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 text-slate-300">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 text-zinc-300">
           <circle cx="12" cy="12" r="10" />
           <line x1="12" y1="8" x2="12" y2="12" />
           <line x1="12" y1="16" x2="12.01" y2="16" />
         </svg>
-        <h3 className="text-base font-medium text-slate-700">Couldn't load results</h3>
-        <p className="mt-1 text-sm text-slate-500">Is the backend running?</p>
+        <h3 className="text-base font-medium text-zinc-700">Couldn't load results</h3>
+        <p className="mt-1 text-sm text-zinc-500">Is the backend running?</p>
       </div>
     );
   }
@@ -82,8 +82,8 @@ export default function EvalPanel() {
   return (
     <div>
       <div className="mb-6">
-        <h2 className="text-base font-semibold text-slate-800">COVID-QA Experiment</h2>
-        <p className="text-sm text-slate-500">
+        <h2 className="text-base font-semibold text-zinc-800">COVID-QA Experiment</h2>
+        <p className="text-sm text-zinc-500">
           Last run {new Date(data!.created_at + "Z").toLocaleString()} · 50 test questions · LLM-as-a-Judge
         </p>
       </div>
@@ -96,14 +96,14 @@ export default function EvalPanel() {
             <div key={m.key} className="card p-5">
               <div className="flex items-baseline justify-between gap-2">
                 <div>
-                  <span className="text-sm font-medium text-slate-600">{m.label}</span>
-                  <p className="text-xs text-slate-400">{m.description}</p>
+                  <span className="text-sm font-medium text-zinc-600">{m.label}</span>
+                  <p className="text-xs text-zinc-400">{m.description}</p>
                 </div>
-                <span className="shrink-0 text-2xl font-semibold tabular-nums text-slate-800">
+                <span className="shrink-0 text-2xl font-semibold tabular-nums text-zinc-800">
                   {raw.toFixed(3)}
                 </span>
               </div>
-              <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-surface-100">
+              <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-zinc-100">
                 <div
                   className={`h-full rounded-full transition-all ${scoreColor(pct, m.higherBetter)}`}
                   style={{ width: `${pct}%` }}

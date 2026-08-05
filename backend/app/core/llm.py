@@ -9,6 +9,17 @@ llm = ChatOpenAI(
     temperature=0,
 )
 
+router_llm = (
+    ChatOpenAI(
+        api_key=settings.FIREWORKS_API_KEY,
+        base_url=settings.FIREWORKS_BASE_URL,
+        model=settings.ROUTE_CLASSIFIER_MODEL,
+        temperature=0,
+    )
+    if settings.ROUTE_CLASSIFIER_MODEL
+    else llm
+)
+
 # Vision-capable LLM for scanned/image PDFs + image uploads. Same Fireworks
 # base URL (OpenAI-compatible vision endpoint); None when no vision model is
 # configured, so callers skip vision extraction entirely.

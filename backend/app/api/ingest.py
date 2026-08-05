@@ -8,17 +8,14 @@ from pydantic import BaseModel
 from app.api.deps import get_current_user
 from app.config import settings
 from app.core.security import UserPublic
-from app.db.ingestion import ingest_pdf
+from app.ingest_worker.flow import worker_agent
 from app.queue import s3 as s3_queue
 from app.queue import sqs
 from app.queue import status as ingest_status
 
 router = APIRouter()
 
-# Magic-byte signatures to reject renamed executables/scripts. Only PDF has a
-# reliable magic header; text/image types are accepted by extension + size.
 _MAGIC_SIGS: dict[str, bytes] = {"pdf": b"%PDF-"}
-
 
 def _supported_extensions() -> set[str]:
     return {
@@ -27,14 +24,10 @@ def _supported_extensions() -> set[str]:
         if e.strip()
     }
 
-
 def _ext_of(filename: str) -> str:
     return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
-
 def _validate_upload(raw: bytes, declared_filename: str) -> None:
-    """Defensive checks before handing bytes to a loader. Size cap runs before
-    magic-bytes so an attacker can't push gigabytes through the magic path."""
     if len(raw) == 0:
         raise HTTPException(status_code=400, detail="Empty upload.")
     max_bytes = settings.MAX_PDF_SIZE_MB * 1024 * 1024
@@ -57,14 +50,12 @@ def _validate_upload(raw: bytes, declared_filename: str) -> None:
             detail=f"File is not a real {ext.upper()} (missing {magic!r} magic header).",
         )
 
-
 class IngestResponse(BaseModel):
     job_id: str
     user_id: str
-    state: str  # 'queued' (async) | 'completed'|'empty' (inline fallback)
+    state: str
     num_chunks: int | None
     file_path: str | None = None
-
 
 class JobStatusResponse(BaseModel):
     job_id: str
@@ -78,10 +69,7 @@ class JobStatusResponse(BaseModel):
     created_at: str | None
     updated_at: str | None
 
-
 def _save_upload(raw: bytes, user_id: str, ext: str) -> tuple[str, str, str]:
-    """Persist bytes to INGEST_UPLOAD_DIR/{job_id}.{ext}, return (job_id, file_path, sha256).
-    The extension is preserved so the loader registry can dispatch by type."""
     job_id = uuid.uuid4().hex
     upload_dir = settings.INGEST_UPLOAD_DIR
     os.makedirs(upload_dir, exist_ok=True)
@@ -92,21 +80,11 @@ def _save_upload(raw: bytes, user_id: str, ext: str) -> tuple[str, str, str]:
     sha = hashlib.sha256(raw).hexdigest()
     return job_id, file_path, sha
 
-
 @router.post("/ingest/pdf", response_model=IngestResponse)
 async def ingest_pdf_endpoint(
     file: UploadFile = File(...),
     current_user: UserPublic = Depends(get_current_user),
 ):
-    """Queue an uploaded file for async embedding by the in-process worker.
-
-    Auth-required; the file is owned by the logged-in user (retrieval will be
-    scoped to their chunks). Enforces the per-user PDF cap (MAX_PDFS_PER_USER)
-    and the upload validation (size/magic/extension). validate -> spool to
-    data/uploads/{job_id}.<ext> -> if SQS configured: write PENDING sqlite row
-    + publish pointer msg -> return 'queued' now. Else inline ingest_pdf()
-    fallback (dev without a queue).
-    """
     raw = await file.read()
     declared = file.filename or "upload.pdf"
     _validate_upload(raw, declared_filename=declared)
@@ -123,15 +101,13 @@ async def ingest_pdf_endpoint(
     job_id, file_path, sha = _save_upload(raw, uid, ext)
 
     if not sqs.is_configured():
-        result = ingest_pdf(file_path, user_id=uid)
-        # Inline path: still count toward the cap by recording the job.
         ingest_status.create_job(job_id=job_id, user_id=uid, file_path=file_path, sha256=sha)
-        ingest_status.set_state(job_id, "COMPLETED" if result["status"] == "ok" else "FAILED", num_chunks=result["num_chunks"])
+        final_state = worker_agent.invoke({"job_id": job_id, "user_id": uid, "file_path": file_path, "sha256": sha, "attempts": 1})
         return IngestResponse(
             job_id=job_id,
             user_id=uid,
-            state=result["status"],
-            num_chunks=result["num_chunks"],
+            state="completed" if final_state.get("final_state") == "COMPLETED" else "failed",
+            num_chunks=final_state.get("num_chunks", 0),
             file_path=file_path,
         )
 
@@ -262,15 +238,15 @@ async def ingest_s3(
     # We still call _save_upload for the job_id + sha generation.
 
     if not sqs.is_configured():
-        # Inline fallback: download + process now.
-        temp_path = s3_queue.download_to_temp(body.file_key)
-        try:
-            result = ingest_pdf(temp_path, user_id=uid)
-        finally:
-            os.unlink(temp_path)
         ingest_status.create_job(job_id=job_id, user_id=uid, file_path=s3_path, sha256=sha)
-        ingest_status.set_state(job_id, "COMPLETED" if result["status"] == "ok" else "FAILED", num_chunks=result["num_chunks"])
-        return IngestResponse(job_id=job_id, user_id=uid, state=result["status"], num_chunks=result["num_chunks"], file_path=s3_path)
+        final_state = worker_agent.invoke({"job_id": job_id, "user_id": uid, "file_path": s3_path, "sha256": sha, "attempts": 1})
+        return IngestResponse(
+            job_id=job_id, 
+            user_id=uid, 
+            state="completed" if final_state.get("final_state") == "COMPLETED" else "failed",
+            num_chunks=final_state.get("num_chunks", 0),
+            file_path=s3_path
+        )
 
     ingest_status.create_job(job_id=job_id, user_id=uid, file_path=s3_path, sha256=sha)
     try:

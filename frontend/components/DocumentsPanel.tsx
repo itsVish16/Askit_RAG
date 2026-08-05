@@ -8,7 +8,7 @@ const STATE_STYLE: Record<string, string> = {
   FAILED: "bg-red-50 text-red-700 ring-1 ring-red-200",
   RETRYING: "bg-amber-50 text-amber-700 ring-1 ring-amber-200",
   PROCESSING: "bg-sky-50 text-sky-700 ring-1 ring-sky-200",
-  PENDING: "bg-surface-100 text-slate-500 ring-1 ring-surface-200",
+  PENDING: "bg-zinc-100 text-zinc-500 ring-1 ring-zinc-200",
 };
 
 export default function DocumentsPanel() {
@@ -78,8 +78,8 @@ export default function DocumentsPanel() {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-base font-semibold text-slate-800">Documents</h2>
-        <p className="text-sm text-slate-500">
+        <h2 className="text-base font-semibold text-zinc-900">Documents</h2>
+        <p className="text-sm text-zinc-500">
           Upload PDFs, text, or images. Max 5 documents per account, 10 pages each.
         </p>
       </div>
@@ -95,7 +95,7 @@ export default function DocumentsPanel() {
               type="file"
               required
               accept=".pdf,.txt,.md,.png,.jpg,.jpeg"
-              className="input file:mr-3 file:rounded-md file:border-0 file:bg-surface-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 file:cursor-pointer"
+              className="input file:mr-3 file:rounded-md file:border-0 file:bg-zinc-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-zinc-700 file:cursor-pointer"
             />
           </div>
           <button type="submit" disabled={busy || atCap} className="btn-primary">
@@ -116,26 +116,26 @@ export default function DocumentsPanel() {
       {loading ? (
         <div className="space-y-2">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="card h-16 animate-pulse bg-surface-50" />
+            <div key={i} className="card h-16 animate-pulse bg-zinc-50" />
           ))}
         </div>
       ) : jobs.length === 0 ? (
         <div className="card flex flex-col items-center justify-center py-12 text-center">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 text-slate-300">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 text-zinc-300">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             <polyline points="14 2 14 8 20 8" />
           </svg>
-          <p className="text-sm text-slate-500">No documents yet. Upload one above.</p>
+          <p className="text-sm text-zinc-500">No documents yet. Upload one above.</p>
         </div>
       ) : (
-        <div className="card divide-y divide-surface-100">
+        <div className="card divide-y divide-zinc-200/60">
           {jobs.map((j) => (
             <div key={j.job_id} className="flex items-center justify-between gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-slate-800">
+                <p className="truncate text-sm font-medium text-zinc-900">
                   {filenameOf(j.file_path)}
                 </p>
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-zinc-400">
                   {j.created_at ? new Date(j.created_at + "Z").toLocaleString() : ""}
                   {j.num_chunks != null ? ` · ${j.num_chunks} chunk${j.num_chunks === 1 ? "" : "s"}` : ""}
                   {j.error ? ` · ${j.error}` : ""}

@@ -1,16 +1,4 @@
-"""Sqlite-backed job status for the ingest pipeline.
-
-Single-process deployment = single writer, so thread-safety matters but
-distributed coordination doesn't — sqlite + a threading.Lock is enough.
-
-States:
-  PENDING    — request accepted; not yet dequeued
-  PROCESSING — worker has the SQS message in flight
-  COMPLETED  — chunks upserted to Qdrant, SQS msg deleted
-  FAILED     — permanent failure (bad PDF, extraction error); SQS msg deleted
-  RETRYING   — transient failure (Qdrant 5xx, network blip); SQS msg NOT
-               deleted; visibility timeout redelivers. attempts bumped.
-"""
+"""Sqlite-backed job status for the ingest pipeline."""
 
 import os
 import sqlite3
@@ -25,8 +13,7 @@ _initialized = False
 
 
 def _connect() -> sqlite3.Connection:
-    """Open the connection lazily with check_same_thread=False — the ingest
-    worker thread writes and the FastAPI handler threads read."""
+    """Open the connection lazily."""
     global _conn, _initialized
     if _initialized:
         return _conn
@@ -72,8 +59,7 @@ def _init_db(conn) -> None:
 
 
 def create_job(job_id: str, user_id: str, file_path: str, sha256: str) -> None:
-    """Insert a PENDING row. INSERT OR IGNORE keeps a duplicate publish
-    idempotent — we keep the first state and don't bump attempts."""
+    """Insert a PENDING row."""
     conn = _connect()
     with _conn_lock:
         conn.execute(
@@ -91,8 +77,7 @@ def set_state(
     num_chunks: int | None = None,
     error: str | None = None,
 ) -> None:
-    """Atomic state transition. Each commit marks SQS progress persistently
-    (a crash mid-state-machine restarts from the last committed state)."""
+    """Atomic state transition."""
     conn = _connect()
     fields = ["state = ?"]
     values: list[Any] = [state]
@@ -119,8 +104,7 @@ def get_job(job_id: str) -> dict | None:
 
 
 def list_pending_jobs(limit: int = 1000) -> list[dict]:
-    """Jobs stuck in PENDING/PROCESSING/RETRYING across an API restart — the
-    startup sweeper re-sends these to SQS so they get worked again."""
+    """Jobs stuck in PENDING/PROCESSING/RETRYING across an API restart."""
     conn = _connect()
     with _conn_lock:
         rows = conn.execute(
@@ -131,7 +115,7 @@ def list_pending_jobs(limit: int = 1000) -> list[dict]:
 
 
 def list_jobs_by_user(user_id: str) -> list[dict]:
-    """All jobs for one user (newest first) — drives the 'My Documents' UI."""
+    """All jobs for one user (newest first)."""
     conn = _connect()
     with _conn_lock:
         rows = conn.execute(
@@ -142,7 +126,7 @@ def list_jobs_by_user(user_id: str) -> list[dict]:
 
 
 def count_user_completed_jobs(user_id: str) -> int:
-    """Number of COMPLETED jobs for a user — enforces the per-user PDF cap."""
+    """Number of COMPLETED jobs for a user."""
     conn = _connect()
     with _conn_lock:
         row = conn.execute(
