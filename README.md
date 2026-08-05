@@ -1,8 +1,15 @@
+<p align="center">
+  <img src="docs/assets/Askit_logo.png" alt="Askit Logo" width="300" />
+</p>
+
 # Askit RAG 🚀
 
-A production-grade, highly optimized biomedical RAG built over the **RAGBench COVID-QA** corpus. Askit RAG is validated incrementally with [Opik](https://www.comet.com/docs/opik/) experiments and features a stunning, glassmorphism UI designed for modern luxury.
+A production-grade, highly optimized biomedical RAG built over the **RAGBench COVID-QA** corpus. Askit RAG features a stunning, glassmorphism UI designed for modern luxury and empowers users to chat with their uploaded biomedical documents. 
 
----
+### Why Askit?
+- **Unparalleled Retrieval Accuracy**: The system leverages a multi-stage hybrid search combining dense retrieval (Qdrant + `bge-large`), sparse lexical retrieval (BM25 + keyword extraction), and precise cross-encoder reranking. This architecture achieves exceptional context recall (0.587) and answer relevance (0.844) on domain-specific datasets.
+- **Deep Observability**: Fully integrated with [Opik](https://www.comet.com/docs/opik/), Askit RAG traces every LLM generation, retrieval query, and multi-step agent action. Performance is incrementally validated and monitored.
+- **Async Ingestion**: Powerful background workers process and chunk documents securely without blocking the main event loop.
 
 ## 🏗 Architecture
 
