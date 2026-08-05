@@ -67,7 +67,10 @@ export default function Dashboard() {
 
   // Refresh chat history when AskPanel dispatches a session-updated event.
   useEffect(() => {
-    const handler = () => setSessionRefreshKey((k) => k + 1);
+    const handler = () => {
+      console.log(`[Dashboard] Received askit:session-updated! Incrementing sessionRefreshKey.`);
+      setSessionRefreshKey((k) => k + 1);
+    };
     window.addEventListener("askit:session-updated", handler);
     return () => window.removeEventListener("askit:session-updated", handler);
   }, []);
@@ -76,7 +79,10 @@ export default function Dashboard() {
   const handleSessionSelect = useCallback(
     (sessionId: string) => {
       setSessionId(sessionId);
-      // Bump refresh key so AskPanel re-reads turns from localStorage.
+      // Switch to the Ask tab to show the chat
+      setTab("ask");
+      setSidebarOpen(false); // Close mobile sidebar if open
+      // Bump refresh key so AskPanel re-reads turns from server.
       setSessionRefreshKey((k) => k + 1);
     },
     []
@@ -86,14 +92,15 @@ export default function Dashboard() {
     return (
       <main className="flex min-h-screen items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <Image
-            src="/logo-small.png"
-            alt="Askit"
-            width={48}
-            height={32}
-            priority
-          />
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-surface-300 border-t-brand-600" />
+            <Image
+              src="/logo-small.png"
+              alt="Askit"
+              width={40}
+              height={40}
+              className="h-10 w-auto object-contain transition-transform duration-300 group-hover:scale-110"
+              priority
+            />
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-300 border-t-brand-900" />
         </div>
       </main>
     );
@@ -102,18 +109,15 @@ export default function Dashboard() {
   return (
     <div className="flex min-h-screen">
       {/* Desktop sidebar */}
-      <aside className="hidden w-56 shrink-0 flex-col border-r border-surface-200 bg-white sm:flex">
-        <div className="flex items-center gap-3 border-b border-surface-100 px-5 py-4">
+      <aside className="hidden w-56 shrink-0 flex-col border-r border-zinc-200 bg-surface-50 sm:flex">
+        <div className="flex items-center gap-3 border-b border-zinc-200 px-5 py-4">
           <Image
             src="/logo.png"
             alt="Askit"
-            width={36}
-            height={24}
-            className="shrink-0"
+            width={120}
+            height={40}
+            className="h-8 w-auto shrink-0 object-contain"
           />
-          <span className="text-base font-semibold tracking-tight text-slate-800">
-            Askit
-          </span>
         </div>
 
         <nav className="space-y-0.5 p-3">
@@ -123,12 +127,12 @@ export default function Dashboard() {
               onClick={() => setTab(t.id)}
               className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
                 tab === t.id
-                  ? "bg-brand-50 text-brand-700 font-medium"
-                  : "text-slate-600 hover:bg-surface-50"
+                  ? "bg-white text-zinc-900 shadow-sm border border-zinc-200/60 font-medium"
+                  : "text-zinc-600 hover:bg-zinc-200/50"
               }`}
             >
               <span
-                className={tab === t.id ? "text-brand-600" : "text-slate-400"}
+                className={tab === t.id ? "text-brand-900" : "text-zinc-400"}
               >
                 {t.icon}
               </span>
@@ -146,8 +150,8 @@ export default function Dashboard() {
 
         <div className="mt-auto border-t border-surface-100 p-3">
           <div className="mb-2 truncate px-1 text-sm">
-            <p className="truncate font-medium text-slate-800">{user.name}</p>
-            <p className="truncate text-xs text-slate-400">{user.email}</p>
+            <p className="truncate font-medium text-zinc-900">{user.name}</p>
+            <p className="truncate text-xs text-zinc-400">{user.email}</p>
           </div>
           <button onClick={logout} className="btn-ghost w-full justify-start text-xs">
             Sign out
@@ -156,25 +160,24 @@ export default function Dashboard() {
       </aside>
 
       {/* Mobile header + sidebar overlay */}
-      <div className="fixed top-0 left-0 right-0 z-20 flex items-center gap-3 border-b border-surface-200 bg-white px-4 py-3 sm:hidden">
-        <button onClick={() => setSidebarOpen(true)} className="text-slate-600">
+      <div className="fixed top-0 left-0 right-0 z-20 flex items-center gap-3 border-b border-zinc-200 bg-white px-4 py-3 sm:hidden">
+        <button onClick={() => setSidebarOpen(true)} className="text-zinc-600">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <line x1="3" y1="6" x2="21" y2="6" />
             <line x1="3" y1="12" x2="21" y2="12" />
             <line x1="3" y1="18" x2="21" y2="18" />
           </svg>
         </button>
-        <Image src="/logo.png" alt="Askit" width={24} height={16} />
-        <span className="text-sm font-semibold text-slate-800">Askit</span>
+        <Image src="/logo.png" alt="Askit" width={90} height={30} className="h-6 w-auto object-contain" />
       </div>
 
       {sidebarOpen && (
         <div className="fixed inset-0 z-30 sm:hidden">
           <div className="absolute inset-0 bg-black/20" onClick={() => setSidebarOpen(false)} />
-          <aside className="relative flex h-full w-56 flex-col bg-white shadow-elevated">
+          <aside className="relative flex h-full w-56 flex-col bg-surface-50 shadow-elevated">
             <div className="flex items-center justify-between border-b border-surface-100 px-5 py-4">
-              <span className="text-base font-semibold text-slate-800">Askit</span>
-              <button onClick={() => setSidebarOpen(false)} className="text-slate-400">
+              <Image src="/logo.png" alt="Askit" width={90} height={30} className="h-6 w-auto object-contain" />
+              <button onClick={() => setSidebarOpen(false)} className="text-zinc-400">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
@@ -188,11 +191,11 @@ export default function Dashboard() {
                   onClick={() => { setTab(t.id); setSidebarOpen(false); }}
                   className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
                     tab === t.id
-                      ? "bg-brand-50 text-brand-700 font-medium"
-                      : "text-slate-600 hover:bg-surface-50"
+                      ? "bg-white text-zinc-900 shadow-sm border border-zinc-200/60 font-medium"
+                      : "text-zinc-600 hover:bg-zinc-200/50"
                   }`}
                 >
-                  <span className={tab === t.id ? "text-brand-600" : "text-slate-400"}>{t.icon}</span>
+                  <span className={tab === t.id ? "text-brand-900" : "text-zinc-400"}>{t.icon}</span>
                   {t.label}
                 </button>
               ))}

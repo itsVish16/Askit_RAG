@@ -21,11 +21,7 @@ interface Turn {
   queries: string[];
 }
 
-let _turnId = 0;
-function nextId() {
-  _turnId += 1;
-  return `t${_turnId}`;
-}
+
 
 export default function AskPanel() {
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -50,7 +46,7 @@ export default function AskPanel() {
           const ai = msgs[i + 1];
           if (human && human.role === "human") {
             loaded.push({
-              id: nextId(),
+              id: crypto.randomUUID(),
               question: human.content,
               answer: ai?.content || "",
               isStreaming: false,
@@ -60,7 +56,6 @@ export default function AskPanel() {
           }
         }
         setTurns(loaded);
-        _turnId = loaded.length;
       })
       .catch(() => {});
   }, []);
@@ -77,7 +72,7 @@ export default function AskPanel() {
     setErr(null);
     setQuery("");
 
-    const turnId = nextId();
+    const turnId = crypto.randomUUID();
     const newTurn: Turn = {
       id: turnId,
       question: q,
@@ -92,14 +87,20 @@ export default function AskPanel() {
     setBusy(true);
 
     const sid = getSessionId();
+    console.log(`[AskPanel] askStream START. sid=${sid}, query="${q}"`);
 
     aborter.current = askStream(
       q,
       sid,
       (evt: StreamEvent) => {
         if (evt.event === "session" && evt.session_id) {
+          console.log(`[AskPanel] session event received: ${evt.session_id}`);
           setSessionId(evt.session_id);
         } else if (evt.event === "token" && evt.token) {
+          // Log only occasionally to avoid spam
+          if (evt.token.length < 10) {
+            console.log(`[AskPanel] first token received: "${evt.token}"`);
+          }
           // Update the streaming answer text.
           setTurns((prev) =>
             prev.map((t) =>
@@ -107,6 +108,7 @@ export default function AskPanel() {
             )
           );
         } else if (evt.event === "done") {
+          console.log(`[AskPanel] DONE event received. Final answer length: ${evt.answer?.length}`);
           // Finalize the turn.
           setTurns((prev) =>
             prev.map((t) =>
@@ -122,10 +124,12 @@ export default function AskPanel() {
             )
           );
           setBusy(false);
+          console.log(`[AskPanel] Dispatching askit:session-updated (DONE)`);
           window.dispatchEvent(new CustomEvent("askit:session-updated"));
         }
       },
       (error: Error) => {
+        console.error(`[AskPanel] onError triggered:`, error);
         setErr(error.message);
         setTurns((prev) =>
           prev.map((t) =>
@@ -133,9 +137,11 @@ export default function AskPanel() {
           )
         );
         setBusy(false);
+        console.log(`[AskPanel] Dispatching askit:session-updated (ERROR)`);
         window.dispatchEvent(new CustomEvent("askit:session-updated"));
       },
       () => {
+        console.log(`[AskPanel] onDone callback (connection closed)`);
         setBusy(false);
       }
     );
@@ -147,7 +153,6 @@ export default function AskPanel() {
     setTurns([]);
     setErr(null);
     setShowDetails({});
-    _turnId = 0;
   }
 
   return (
@@ -155,8 +160,8 @@ export default function AskPanel() {
       {/* header */}
       <div className="flex items-center justify-between pb-3">
         <div>
-          <h2 className="text-base font-semibold text-slate-800">Ask</h2>
-          <p className="text-sm text-slate-500">
+          <h2 className="text-base font-semibold text-zinc-900">Ask</h2>
+          <p className="text-sm text-zinc-500">
             Questions grounded on your uploaded documents.
           </p>
         </div>
@@ -178,7 +183,7 @@ export default function AskPanel() {
       <div className="card flex-1 overflow-y-auto">
         <div className="flex flex-col gap-4 p-4 sm:p-6">
           {turns.length === 0 ? (
-            <div className="flex h-full min-h-[24rem] items-center justify-center text-center text-sm text-slate-400">
+            <div className="flex h-full min-h-[24rem] items-center justify-center text-center text-sm text-zinc-400">
               Ask a question to get started.
             </div>
           ) : (
@@ -186,7 +191,7 @@ export default function AskPanel() {
               <div key={t.id} className="space-y-2">
                 {/* user bubble */}
                 <div className="flex justify-end">
-                  <div className="max-w-[75%] rounded-lg bg-brand-600 px-4 py-2.5 text-sm text-white leading-relaxed">
+                  <div className="max-w-[75%] rounded-lg bg-zinc-900 px-4 py-3 text-sm text-white shadow-sm leading-relaxed">
                     {t.question}
                   </div>
                 </div>
@@ -196,7 +201,7 @@ export default function AskPanel() {
                   {t.isStreaming && !t.answer ? (
                     /* typing indicator while waiting for first tokens */
                     <div className="flex items-start gap-2">
-                      <div className="rounded-lg bg-surface-50 px-4 py-3">
+                      <div className="rounded-lg bg-white px-4 py-3 border border-zinc-200/60 shadow-sm">
                         <span className="dot" />
                         <span className="dot" />
                         <span className="dot" />
@@ -204,7 +209,7 @@ export default function AskPanel() {
                     </div>
                   ) : (
                     <div>
-                      <div className="rounded-lg bg-surface-50 px-4 py-3 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">
+                      <div className="rounded-lg bg-white px-4 py-3 border border-zinc-200/60 shadow-sm text-sm leading-relaxed text-zinc-800 whitespace-pre-wrap">
                         {t.answer}
                         {t.isStreaming && <span className="cursor-blink" />}
                       </div>
@@ -218,7 +223,7 @@ export default function AskPanel() {
                               [t.id]: !s[t.id],
                             }))
                           }
-                          className="mt-1 text-xs font-medium text-brand-600 hover:text-brand-700"
+                          className="mt-1 text-xs font-medium text-brand-600 hover:text-brand-700 font-semibold"
                         >
                           {showDetails[t.id]
                             ? "Hide retrieval details"
@@ -226,17 +231,17 @@ export default function AskPanel() {
                         </button>
                       )}
                       {showDetails[t.id] && !t.isStreaming && (
-                        <div className="mt-2 space-y-2 rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs">
+                        <div className="mt-2 space-y-2 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs">
                           {t.queries.length > 0 && (
                             <div>
-                              <p className="mb-1 font-medium text-slate-600">
+                              <p className="mb-1 font-medium text-zinc-600">
                                 Search queries
                               </p>
                               <div className="flex flex-wrap gap-1.5">
                                 {t.queries.map((x, ci) => (
                                   <span
                                     key={ci}
-                                    className="rounded bg-white px-2 py-0.5 text-slate-600 ring-1 ring-surface-200"
+                                    className="rounded bg-white px-2 py-0.5 text-zinc-600 ring-1 ring-zinc-200"
                                   >
                                     {x}
                                   </span>
@@ -246,10 +251,10 @@ export default function AskPanel() {
                           )}
                           {t.context.length > 0 && (
                             <div>
-                              <p className="mb-1 font-medium text-slate-600">
+                              <p className="mb-1 font-medium text-zinc-600">
                                 Context chunks
                               </p>
-                              <ol className="list-decimal space-y-1 pl-5 text-slate-500">
+                              <ol className="list-decimal space-y-1 pl-5 text-zinc-500">
                                 {t.context.map((c, ci) => (
                                   <li key={ci} className="leading-relaxed">
                                     {c}
@@ -270,45 +275,41 @@ export default function AskPanel() {
         </div>
       </div>
 
-      {/* input — send button text always "Send" with optional spinner */}
-      <form onSubmit={ask} className="mt-3 flex gap-2">
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Ask a question about your documents…"
-          className="input"
-          disabled={busy}
-        />
-        <button
-          type="submit"
-          disabled={busy || !query.trim()}
-          className="btn-primary shrink-0"
+      {/* chat input - Perplexity style unified pill */}
+      <div className="pt-2 pb-4">
+        <form 
+          onSubmit={ask} 
+          className="relative flex items-center rounded-2xl bg-white border border-zinc-200/80 shadow-sm focus-within:border-brand-500 focus-within:ring-1 focus-within:ring-brand-500 transition-all overflow-hidden"
         >
-          {busy && (
-            <svg
-              className="h-4 w-4 animate-spin"
-              viewBox="0 0 24 24"
-              fill="none"
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Ask a question about your documents..."
+            className="flex-1 bg-transparent px-4 py-3.5 text-sm text-zinc-800 placeholder-zinc-400 focus:outline-none disabled:opacity-50"
+            disabled={busy}
+          />
+          <div className="pr-2">
+            <button
+              type="submit"
+              disabled={busy || !query.trim()}
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-900 text-white transition-transform hover:scale-105 disabled:opacity-30 disabled:hover:scale-100"
             >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              />
-            </svg>
-          )}
-          Send
-        </button>
-      </form>
+              {busy ? (
+                <svg className="h-4 w-4 animate-spin text-white" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12h14" />
+                  <path d="m12 5 7 7-7 7" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
 
       <style jsx>{`
         .dot {
@@ -316,7 +317,7 @@ export default function AskPanel() {
           width: 6px;
           height: 6px;
           border-radius: 50%;
-          background: #94a3b8;
+          background: #a1a1aa;
           margin-right: 3px;
           animation: blink 1.4s infinite both;
         }
@@ -339,7 +340,7 @@ export default function AskPanel() {
         .cursor-blink::after {
           content: "▊";
           animation: pulse 1s infinite;
-          color: #6366f1;
+          color: #0284c7;
           margin-left: 1px;
         }
         @keyframes pulse {

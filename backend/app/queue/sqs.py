@@ -1,15 +1,4 @@
-"""SQS-backed ingestion queue (the only AWS service this design touches).
-
-PDF bytes stay on local disk (see /ingest/pdf — it writes data/uploads/{job_id}.pdf);
-the SQS message is just a tiny JSON pointer:
-
-    {"job_id": "...", "file_path": "/abs/path/to/job.pdf",
-     "user_id": "...", "sha256": "...", "attempts": 0}
-
-Well under SQS's 256 KB limit, so no S3 transit. The ingest worker
-(app/ingest_worker/runner.py) runs as a daemon thread inside the FastAPI
-process and calls receive_one()/delete_message() in a loop.
-"""
+"""SQS-backed ingestion queue client."""
 
 import json
 import threading
@@ -27,8 +16,7 @@ _client_initialized = False
 
 
 def _sqs():
-    """Lazily build the SQS client. Reads creds from settings if present, else
-    falls back to boto3's default chain (~/.aws/credentials, env, IAM)."""
+    """Lazily build the SQS client."""
     global _client, _client_initialized
     if _client_initialized:
         return _client
@@ -52,9 +40,7 @@ def is_configured() -> bool:
 
 
 def send_job(job_id: str, file_path: str, user_id: str, sha256: str, attempts: int = 0) -> str:
-    """Publish one ingest job. Returns SQS MessageId. No MessageDeduplicationId
-    — we rely on idempotent upserts at the worker (deterministic point_id)
-    instead, so an at-least-once redelivery overwrites rather than duplicates."""
+    """Publish one ingest job."""
     body = json.dumps(
         {"job_id": job_id, "file_path": file_path, "user_id": user_id, "sha256": sha256, "attempts": attempts}
     )
@@ -70,9 +56,7 @@ def send_job(job_id: str, file_path: str, user_id: str, sha256: str, attempts: i
 
 
 def receive_one():
-    """Long-poll for a single ingest message. Returns None on empty poll.
-    Otherwise {receipt_handle, body...} with receive_count from
-    ApproximateReceiveCount so we can FAIL a job before SQS's DLQ policy kicks in."""
+    """Long-poll for a single ingest message."""
     try:
         resp = _sqs().receive_message(
             QueueUrl=settings.SQS_QUEUE_URL,
@@ -101,8 +85,7 @@ def receive_one():
 
 
 def delete_message(receipt_handle: str) -> None:
-    """ACK — the worker deletes a message when done with the job. NOT deleting
-    on transient failure is what gives us visibility-timeout redelivery free."""
+    """ACK — delete a message when done with the job."""
     try:
         _sqs().delete_message(QueueUrl=settings.SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
     except ClientError as exc:

@@ -5,7 +5,7 @@ import time
 import uuid
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from opik.integrations.langchain import OpikTracer
 from pydantic import BaseModel, Field
@@ -13,16 +13,18 @@ from pydantic import BaseModel, Field
 from app.agent.graph import agent
 from app.api.deps import get_current_user
 from app.config import settings
+from app.core.logger import set_session_id
 from app.core.security import UserPublic
 from app.db.chat import (
     create_session,
-    delete_session as db_delete_session,
     get_messages,
     get_session,
     get_sessions_by_user,
-    message_count,
     queue_message,
     update_session_title,
+)
+from app.db.chat import (
+    delete_session as db_delete_session,
 )
 
 router = APIRouter()
@@ -77,27 +79,31 @@ class QueryResponse(BaseModel):
 
 
 @router.post("/ask", response_model=QueryResponse)
-async def ask_query(user_input: UserInput, current_user: UserPublic = Depends(get_current_user)):
+async def ask_query(
+    user_input: UserInput,
+    background_tasks: BackgroundTasks,
+    current_user: UserPublic = Depends(get_current_user),
+):
     session_id = user_input.session_id or str(uuid.uuid4())
+    set_session_id(session_id)
     _check_rate_limit(session_id)
 
-    opik_tracer = OpikTracer(thread_id=session_id)
+    opik_tracer = OpikTracer(thread_id=session_id, project_name=settings.OPIK_PROJECT_NAME, tags=["chat"])
     result = await agent.ainvoke(
         {"question": user_input.query, "user_id": current_user.id},
         config={"configurable": {"thread_id": session_id}, "callbacks": [opik_tracer]},
     )
-    opik_tracer.flush()
-
-    # Persist turn to SQLite chat store.
-    _save_turn(session_id, current_user.id, user_input.query, result)
+    
+    background_tasks.add_task(opik_tracer.flush)
+    background_tasks.add_task(_save_turn, session_id, current_user.id, user_input.query, result)
 
     return QueryResponse(
         answer=result["answer"],
         session_id=session_id,
-        queries=result["queries"],
-        keywords=result["keywords"],
-        context=result["context"],
-        num_candidates=result["num_candidates"],
+        queries=result.get("queries", []),
+        keywords=result.get("keywords", []),
+        context=result.get("context", []),
+        num_candidates=result.get("num_candidates", 0),
     )
 
 
@@ -105,14 +111,23 @@ async def ask_query(user_input: UserInput, current_user: UserPublic = Depends(ge
 
 
 @router.post("/ask/stream")
-async def ask_stream(user_input: UserInput, current_user: UserPublic = Depends(get_current_user)):
+async def ask_stream(
+    user_input: UserInput,
+    background_tasks: BackgroundTasks,
+    current_user: UserPublic = Depends(get_current_user),
+):
     session_id = user_input.session_id or str(uuid.uuid4())
+    set_session_id(session_id)
     _check_rate_limit(session_id)
 
-    async def event_generator():
-        # Queue the human message immediately.
-        queue_message(session_id, "human", user_input.query)
+    opik_tracer = OpikTracer(thread_id=session_id, project_name=settings.OPIK_PROJECT_NAME, tags=["chat"])
+    background_tasks.add_task(opik_tracer.flush)
 
+    async def event_generator():
+        import logging
+        log = logging.getLogger("ask_stream")
+        log.info(f"Starting event_generator for session {session_id}")
+        
         # Send session event first so the client knows the id.
         yield f"data: {json.dumps({'event': 'session', 'session_id': session_id})}\n\n"
 
@@ -120,19 +135,33 @@ async def ask_stream(user_input: UserInput, current_user: UserPublic = Depends(g
         tok_count = 0
 
         # Stream events from the agent graph.
-        async for event in agent.astream_events(
-            {"question": user_input.query, "user_id": current_user.id},
-            config={"configurable": {"thread_id": session_id}},
-            version="v2",
-        ):
-            kind = event["event"]
-            if kind == "on_chat_model_stream":
-                chunk = event["data"].get("chunk")
-                if chunk and chunk.content and not chunk.tool_call_chunks:
-                    full_answer += chunk.content
-                    tok_count += 1
-                    if tok_count % 3 == 0:  # batch tokens for fewer SSE messages
-                        yield f"data: {json.dumps({'event': 'token', 'token': full_answer})}\n\n"
+        try:
+            async for event in agent.astream_events(
+                {"question": user_input.query, "user_id": current_user.id},
+                config={"configurable": {"thread_id": session_id}, "callbacks": [opik_tracer]},
+                version="v2",
+            ):
+                kind = event["event"]
+                if kind == "on_chat_model_stream":
+                    # Filter out internal LLM calls (e.g. query expansion)
+                    if "internal_tool" in event.get("tags", []):
+                        continue
+                    
+                    # Only stream tokens from the generation nodes.
+                    node_name = event.get("metadata", {}).get("langgraph_node")
+                    if node_name not in ["rag", "chitchat"]:
+                        continue
+
+                    chunk = event["data"].get("chunk")
+                    if chunk and chunk.content and not chunk.tool_call_chunks:
+                        full_answer += chunk.content
+                        tok_count += 1
+                        if tok_count % 3 == 0:  # batch tokens for fewer SSE messages
+                            yield f"data: {json.dumps({'event': 'token', 'token': full_answer})}\n\n"
+        except Exception as e:
+            log.error(f"Error during agent.astream_events: {e}", exc_info=True)
+
+        log.info(f"astream_events completed. Fetching state for session {session_id}")
 
         # Get the full final state from the checkpointer.
         try:
@@ -140,14 +169,19 @@ async def ask_stream(user_input: UserInput, current_user: UserPublic = Depends(g
             final_answer = (state.values.get("answer") or full_answer) if state else full_answer
             ctx = state.values.get("context", []) if state else []
             queries = state.values.get("queries", []) if state else []
-        except Exception:
+        except Exception as e:
+            log.error(f"Error getting state: {e}", exc_info=True)
             final_answer = full_answer
             ctx = []
             queries = []
 
         # Persist to SQLite.
+        from app.db.chat import flush
         result = {"answer": final_answer, "context": ctx, "queries": queries, "keywords": []}
         _save_turn(session_id, current_user.id, user_input.query, result)
+        flush()
+        
+        log.info(f"Database flushed for session {session_id}. Yielding done event.")
 
         # Send the complete answer and done marker.
         yield f"data: {json.dumps({'event': 'done', 'answer': final_answer, 'queries': queries, 'context': ctx})}\n\n"
@@ -217,6 +251,7 @@ def _save_turn(session_id: str, user_id: str, question: str, result: dict) -> No
             update_session_title(session_id, question[:80])
 
     # Queue messages for periodic flush.
+    queue_message(session_id=session_id, role="human", content=question)
     queue_message(
         session_id=session_id,
         role="ai",

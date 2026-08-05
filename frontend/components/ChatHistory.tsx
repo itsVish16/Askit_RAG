@@ -40,19 +40,19 @@ export default function ChatHistory({ activeSessionId, onSelect, refreshKey }: P
   }
 
   return (
-    <div className="mt-6 border-t border-surface-100 pt-4">
-      <p className="mb-2 px-3 text-xs font-medium uppercase tracking-wider text-slate-400">
+    <div className="mt-6 border-t border-zinc-200 pt-4">
+      <p className="mb-2 px-3 text-xs font-medium uppercase tracking-wider text-zinc-400">
         Chat history
       </p>
 
       {loading ? (
         <div className="space-y-1 px-3">
           {[1, 2].map((i) => (
-            <div key={i} className="h-8 animate-pulse rounded-md bg-surface-100" />
+            <div key={i} className="h-8 animate-pulse rounded-md bg-zinc-200" />
           ))}
         </div>
       ) : sessions.length === 0 ? (
-        <p className="px-3 py-2 text-sm text-slate-400">No conversations yet.</p>
+        <p className="px-3 py-2 text-sm text-zinc-400">No conversations yet.</p>
       ) : (
         <nav className="space-y-0.5">
           {sessions.map((s) => {
@@ -62,8 +62,8 @@ export default function ChatHistory({ activeSessionId, onSelect, refreshKey }: P
               key={s.id}
               className={`group relative flex items-center rounded-md px-3 py-2 text-sm transition-colors ${
                 isActive
-                  ? "bg-brand-50 text-brand-700"
-                  : "text-slate-600 hover:bg-surface-50"
+                  ? "bg-white text-zinc-900 shadow-sm border border-zinc-200/60"
+                  : "text-zinc-600 hover:bg-zinc-200/50"
               }`}
             >
               <button
@@ -82,7 +82,7 @@ export default function ChatHistory({ activeSessionId, onSelect, refreshKey }: P
                 className={`ml-2 shrink-0 rounded p-0.5 transition-colors ${
                   confirmId === s.id
                     ? "text-red-500"
-                    : "text-slate-300 opacity-0 group-hover:opacity-100 hover:text-red-500"
+                    : "text-zinc-300 opacity-0 group-hover:opacity-100 hover:text-red-500"
                 }`}
                 title={confirmId === s.id ? "Click again to delete" : "Delete"}
               >

@@ -68,9 +68,8 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-surface-50 p-4">
       <div className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center gap-3">
-          <Image src="/logo.png" alt="Askit" width={64} height={43} priority />
-          <span className="text-lg font-semibold text-slate-700">Askit</span>
+        <div className="mb-8 flex items-center justify-center gap-3">
+          <Image src="/logo.png" alt="Askit" width={180} height={60} className="h-10 w-auto object-contain" priority />
         </div>
         <div className="card p-6">{children}</div>
       </div>

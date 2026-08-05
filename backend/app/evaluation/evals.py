@@ -16,6 +16,10 @@ from opik.evaluation.metrics import (
 
 from app.agent.graph import agent as app_agent
 from app.config import settings
+from app.core.logger import get_logger
+from app.db.retrievers import get_bm25_retriever, get_reranker
+
+logger = get_logger(__name__)
 
 # Each item carries its ground-truth answer so Opik scores against the real
 # answer, not just plausibility.
@@ -28,13 +32,19 @@ test_dataset = [
 
 def my_rag_task(dataset_item: dict):
     question = dataset_item["input"]
-    print(f"\nEvaluating Question: {question}")
+    logger.info(f"\nEvaluating Question: {question}")
     final_state = app_agent.invoke({"question": question})
     return {"output": final_state["answer"], "context": final_state["context"]}
 
 
-if __name__ == "__main__":
-    print("Starting Automated Evals...")
+def run_eval_pipeline_if_needed() -> None:
+    from app.evaluation.results import latest_eval_results
+
+    if latest_eval_results() is not None:
+        logger.info("[evals] Eval results already cached in database. Skipping automated evals.")
+        return
+
+    logger.info("Starting Automated Evals...")
     from opik import Opik
     from opik.evaluation.models import LiteLLMChatModel
 
@@ -56,12 +66,24 @@ if __name__ == "__main__":
     # Warmup: materialize heavy resources in THIS (main) process BEFORE
     # evaluate() forks parallel workers. Children inherit via fork(), so BM25
     # + reranker load ONCE here instead of once per worker (~4GB vs ~12GB).
-    from app.db.retrievers import get_bm25_retriever, rerank_texts
+    import asyncio
 
-    print("Warming up BM25 index + reranker in main process...")
-    get_bm25_retriever(k=settings.K_RETRIEVE)
-    rerank_texts("warmup query", ["warmup document"], k_final=1)
-    print("Warmup done.")
+    logger.info("Warming up BM25 index + reranker in main process...")
+    # Using a new event loop for synchronous execution in the background thread
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.ensure_future(get_bm25_retriever(k=settings.K_RETRIEVE))
+        else:
+            loop.run_until_complete(get_bm25_retriever(k=settings.K_RETRIEVE))
+    except RuntimeError:
+        asyncio.run(get_bm25_retriever(k=settings.K_RETRIEVE))
+
+    try:
+        get_reranker()
+    except Exception as exc:
+        logger.error(f"Warmup failed: {exc}")
+    logger.info("Warmup done.")
 
     experiment = evaluate(
         dataset=dataset,
@@ -82,11 +104,14 @@ if __name__ == "__main__":
             if name is not None and score is not None:
                 metrics[str(name)] = float(score)
     except Exception as exc:
-        print(f"  [evals] could not extract metric summary: {exc}")
+        logger.warning(f"[evals] could not extract metric summary: {exc}")
 
     if metrics:
         from app.evaluation.results import save_eval_results
 
         save_eval_results(metrics)
-        print(f"  [evals] cached metrics: {metrics}")
-    print("Evals complete! Check your Opik Dashboard.")
+        logger.info(f"  [evals] cached metrics: {metrics}")
+    logger.info("Evals complete! Check your Opik Dashboard.")
+
+if __name__ == "__main__":
+    run_eval_pipeline_if_needed()

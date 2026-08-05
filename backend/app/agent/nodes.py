@@ -1,118 +1,126 @@
-"""Single ReAct agent node — the entire pipeline.
+"""Deterministic retrieval and generation pipeline.
 
-The agent has a `retrieve_docs` tool. It decides:
-- Answer directly from chat history / previous context (no tool call → ~4s)
-- Call retrieve_docs to search documents → then answer (~8-15s)
-
-This replaces the old multi-node pipeline (router → classify → retrieve → generate).
+Replaces the old ReAct loop to eliminate redundant LLM calls and reduce latency.
+Always retrieves documents for the query concurrently, then generates an answer in one LLM call.
 """
 
-import asyncio
+from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from pydantic import BaseModel, Field
 
 from app.agent.state import GraphState
-from app.agent.tools import retrieve_docs
+from app.agent.tools import retrieve_docs_async
 from app.config import settings
-from app.core.llm import llm
+from app.core.llm import llm, router_llm
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 _SYSTEM_PROMPT = (
-    "You are a research assistant. You have a retrieve_docs tool.\n\n"
-    "Default behavior: Call retrieve_docs for EVERY question to get "
-    "context from the user's documents. Do NOT answer without calling it.\n\n"
-    "Exception: If the user's question includes 'Here is the context I "
-    "found earlier', read that context. If it fully answers the question, "
-    "you may skip retrieve_docs. Otherwise, still call retrieve_docs.\n\n"
-    "After retrieve_docs: If relevant text was found, answer from it. "
-    "If nothing relevant was found, say you don't have context.\n"
-    "Never invent facts."
+    "You are a helpful research assistant. Answer the user's question based "
+    "on the provided document context. If the context does not contain the answer, "
+    "say you don't know. Do not invent facts."
 )
 
-_MAX_TOOL_CALLS = 3
+class RouteDecision(BaseModel):
+    route: Literal["rag", "chitchat"] = Field(
+        description="Choose 'rag' if the user is asking a question that requires domain knowledge or document retrieval. Choose 'chitchat' if the user is just saying hello, giving a casual greeting, or asking a generic conversational question that requires no external knowledge."
+    )
+
+async def router_node(state: GraphState) -> dict:
+    """Classifies the user query to decide whether to run full RAG or fast chitchat."""
+    question = state["question"]
+    
+    if not settings.ROUTE_ENABLED:
+        return {"route": "rag"}
+        
+    # Use LLM to classify intent
+    # Fast lightweight prompt
+    messages = [
+        SystemMessage(content=(
+            "You are a strict routing assistant. Your job is to classify user queries.\n"
+            "Route to 'rag' for ANY question asking for information, facts, data, projects, or documents.\n"
+            "Route to 'chitchat' ONLY for basic conversational greetings (e.g., 'hello', 'hi', 'how are you').\n"
+            "When in doubt, always choose 'rag'."
+        )),
+        HumanMessage(content=question)
+    ]
+    
+    try:
+        classifier = router_llm.with_config(tags=["router"]).with_structured_output(RouteDecision)
+        decision = await classifier.ainvoke(messages)
+        return {"route": decision.route}
+    except Exception as exc:
+        logger.warning(f"[router] classification failed: {exc} — falling back to rag")
+        return {"route": "rag"}
 
 
-async def react_agent_node(state: GraphState) -> dict:
-    """ReAct agent with a `retrieve_docs` tool.
-
-    The agent receives the question, chat history, and any previously retrieved
-    context. It decides whether to answer directly or call the tool first.
-    """
+async def chitchat_node(state: GraphState) -> dict:
+    """Fast-path generation for conversational queries (skips retrieval entirely)."""
     question = state["question"]
     history = state.get("chat_history", []) or []
-    prev_context = state.get("context", []) or []
+    
+    messages = [
+        SystemMessage(content="You are a helpful and friendly AI assistant. Keep your answer brief and conversational. You do not have access to external documents for this response.")
+    ]
+    messages.extend(history)
+    messages.append(HumanMessage(content=question))
+    
+    response = await llm.with_config({"run_name": "final_generation"}).ainvoke(messages)
+    answer = response.content
+    
+    persisted = [
+        HumanMessage(content=question),
+        AIMessage(content=answer),
+    ]
+    
+    return {
+        "answer": answer,
+        "chat_history": persisted,
+        "context": [],
+        "queries": [],
+        "keywords": [],
+        "num_candidates": 0,
+    }
 
-    # Patch the user_id into the tool so it scopes retrieval correctly.
-    retrieve_docs._user_id = state.get("user_id")
-    llm_w_tools = llm.bind_tools([retrieve_docs])
+async def rag_agent_node(state: GraphState) -> dict:
+    """Retrieves context and generates an answer in a single step."""
+    question = state["question"]
+    history = state.get("chat_history", []) or []
+    user_id = state.get("user_id")
 
-    # --- Build message list ---
-    messages: list = [SystemMessage(content=_SYSTEM_PROMPT)]
+    # Fetch context concurrently
+    context_text, queries, keywords = await retrieve_docs_async(question, user_id)
+    
+    # Store raw context chunks for the UI response
+    found_docs = context_text != "No relevant documents found." and context_text != "No documents available (user not set)."
+    raw_contexts = [context_text] if found_docs else []
 
-    # Inject previous context into the question itself (SystemMessages are
-    # treated as instructions by the LLM and often ignored; appending to the
-    # human message makes it part of the data the LLM reads).
-    if prev_context:
-        # Direct concatenation — no markers, no chunk labels.
-        context_text = "\n".join(prev_context)
-        augmented_question = f"{question}\n\nHere is the context I found earlier:\n{context_text}"
-    else:
-        augmented_question = question
+    # Build prompt
+    augmented_question = (
+        f"Context:\n{context_text}\n\n"
+        f"Question: {question}"
+    )
 
-    # Chat history (prior Q&A turns).
+    messages = [SystemMessage(content=_SYSTEM_PROMPT)]
     messages.extend(history)
     messages.append(HumanMessage(content=augmented_question))
 
-    # --- ReAct loop ---
-    raw_contexts: list[str] = []
-    tool_queries: list[str] = []
+    # Single async LLM generation
+    response = await llm.with_config({"run_name": "final_generation"}).ainvoke(messages)
+    answer = response.content
 
-    for attempt in range(_MAX_TOOL_CALLS):
-        # astream_events intercepts token callbacks even with invoke.
-        response = await asyncio.to_thread(llm_w_tools.invoke, messages)
-        messages.append(response)
-
-        if not response.tool_calls:
-            break  # Final answer — no more tool calls needed.
-
-        # Execute each tool call.
-        for tc in response.tool_calls:
-            if tc["name"] == "retrieve_docs":
-                query = tc["args"].get("query", "")
-                tool_queries.append(query)
-                result = await asyncio.to_thread(retrieve_docs.invoke, tc["args"])
-                raw_contexts.append(result)
-                messages.append(
-                    ToolMessage(content=result, tool_call_id=tc["id"])
-                )
-
-    # The last AIMessage is the final answer.
-    final: AIMessage | None = None
-    for m in reversed(messages):
-        if isinstance(m, AIMessage) and not m.tool_calls:
-            final = m
-            break
-
-    answer = final.content if final else ""
-
-    # Build chat_history for persistence — store raw turns (Human + AI).
-    # System messages and tool internals are ephemeral.
     persisted = [
         HumanMessage(content=question),
         AIMessage(content=answer),
     ]
 
-    # Preserve previous context when agent answered from history (no tool call).
-    # Without this, follow-ups lose all context and re-answer "don't know."
-    if not raw_contexts and prev_context:
-        preserved_context = prev_context
-    else:
-        preserved_context = raw_contexts
-
     return {
         "answer": answer,
         "chat_history": persisted,
-        "context": preserved_context,
-        "queries": tool_queries,
-        "keywords": [],
-        "num_candidates": len(preserved_context),
+        "context": raw_contexts,
+        "queries": queries,
+        "keywords": keywords,
+        "num_candidates": len(raw_contexts),
     }

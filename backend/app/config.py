@@ -24,23 +24,22 @@ class Config:
     QDRANT_URL = os.getenv("QDRANT_URL")
     # Collection for the Fireworks embedding model. Vector dim is auto-probed
     # from the configured embeddings, so a model swap just needs a new
-    # collection name (the old dim-incompatible collection is not reused).
     QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "askit-docs-fireworks")
-    # Raised from the ~5s default: vector batches are large uploads and
-    # Qdrant Cloud needs more time to accept them.
     QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", "60"))
 
-    # --- Ingestion / chunking ---
-    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "850"))
-    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "100"))
-    # Small batches: each chunk carries a 1024-dim vector and big batches
-    # exceed Qdrant Cloud's write timeout. Recursive halving handles strays.
-    INGEST_BATCH_SIZE = int(os.getenv("INGEST_BATCH_SIZE", "16"))
+    # --- Ingestion Config
+    INGEST_SUPPORTED_EXTENSIONS: str = "pdf,txt,md,png,jpg,jpeg"
+    MAX_PDF_SIZE_MB: int = 10
+    MAX_PDF_PAGES: int = 150
+    MAX_PDFS_PER_USER: int = 20
+    INGEST_UPLOAD_DIR: str = "data/uploads"
+    INGEST_KEEP_PDF_AFTER_SUCCESS: bool = False
+    CHUNK_SIZE: int = 1000
+    CHUNK_OVERLAP: int = 200
+    INGEST_BATCH_SIZE: int = 100
+    INGEST_PARQUET_PATH: str = "data/dataset/covid_qa_train.parquet"
 
     # --- Models ---
-    # Dense embeddings via the Fireworks API (OpenAI-compatible embeddings
-    # endpoint, same base URL + key as the LLM). Default is a Fireworks-hosted
-    # embedding model; set to any Fireworks embedding id you've enabled.
     EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "nomic-ai/nomic-embed-text-v1")
     # Cross-encoder reranker (on-device, sentence-transformers). VERIFIED BEST:
     # bge-reranker-v2-m3 (568M) scored WORSE on answer_relevance (0.823 vs

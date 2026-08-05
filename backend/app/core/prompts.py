@@ -27,39 +27,19 @@ RAG_PROMPT = ChatPromptTemplate.from_messages(
     [("system", RAG_SYSTEM_TEXT), MessagesPlaceholder("history", optional=True), ("human", RAG_HUMAN_TEMPLATE)]
 )
 
-# 2. Keyword extraction (feeds BM25)
-KEYWORD_PROMPT_NAME = "askit-keyword-extraction"
-KEYWORD_SYSTEM_TEXT = (
-    "You are a keyword extraction assistant helping a lexical search "
-    "engine (BM25) find biomedical research documents.\n"
-    "Given a user question, extract 5-8 specific keywords, entities, "
-    "and scientific synonyms a paper would likely contain.\n"
+# 2. Search Expansion (feeds both BM25 and Dense Retrieval)
+SEARCH_EXPANSION_PROMPT_NAME = "askit-search-expansion"
+SEARCH_EXPANSION_SYSTEM_TEXT = (
+    "You are a search query expansion assistant for a document retrieval system.\n"
+    "Given a user question, your goal is to analyze its complexity and generate search parameters.\n"
     "Rules:\n"
-    "- Capture entities, diseases, genes, viruses, methods, and key terms.\n"
-    "- Include synonyms/variants (e.g. 'COVID-19' AND 'SARS-CoV-2').\n"
-    "- Prefer formal scientific terminology over everyday language.\n"
-    "- One keyword/phrase per line. No bullets, numbering, or explanations."
+    "1. is_complex: Set to true ONLY if the question is complex, ambiguous, or multifaceted enough to require multiple search queries to find the answer. Set to false for simple, direct queries.\n"
+    "2. keywords: Extract 5-8 specific keywords, entities, and synonyms that a document answering the question would likely contain.\n"
+    "3. variants: IF is_complex is true, generate exactly 3 alternative versions of the question to maximize retrieval probability. Preserve the exact intent and do not invent names or domains. IF is_complex is false, return an empty array.\n"
 )
-KEYWORD_HUMAN_TEMPLATE = "{question}"
-KEYWORD_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages(
-    [("system", KEYWORD_SYSTEM_TEXT), ("human", KEYWORD_HUMAN_TEMPLATE)]
-)
-
-# 3. Multi-query expansion (feeds dense retrieval)
-MULTI_QUERY_PROMPT_NAME = "askit-multi-query"
-MULTI_QUERY_SYSTEM_TEXT = (
-    "You are a search query expansion assistant for a biomedical research "
-    "retrieval system. Given a user question, generate {n} alternative "
-    "versions of that question to retrieve relevant scientific documents.\n"
-    "Rules:\n"
-    "- Preserve the question's INTENT exactly; vary wording and angle only.\n"
-    "- Use domain terms and synonyms a scientific paper would use "
-    "  (e.g. 'COVID-19' -> 'SARS-CoV-2', 'coronavirus').\n"
-    "- One question per line. No numbering, bullets, or explanations."
-)
-MULTI_QUERY_HUMAN_TEMPLATE = "{question}"
-MULTI_QUERY_PROMPT = ChatPromptTemplate.from_messages(
-    [("system", MULTI_QUERY_SYSTEM_TEXT), ("human", MULTI_QUERY_HUMAN_TEMPLATE)]
+SEARCH_EXPANSION_HUMAN_TEMPLATE = "{question}"
+SEARCH_EXPANSION_PROMPT = ChatPromptTemplate.from_messages(
+    [("system", SEARCH_EXPANSION_SYSTEM_TEXT), ("human", SEARCH_EXPANSION_HUMAN_TEMPLATE)]
 )
 
 # 4. Route classifier — decides whether to use fast or full path
@@ -81,7 +61,6 @@ ROUTE_PROMPT = ChatPromptTemplate.from_messages(
 # scripts/seed_prompts.py iterates this to create one versioned entry per prompt.
 PROMPT_SPECS = [
     (RAG_PROMPT_NAME, RAG_SYSTEM_TEXT, RAG_HUMAN_TEMPLATE),
-    (KEYWORD_PROMPT_NAME, KEYWORD_SYSTEM_TEXT, KEYWORD_HUMAN_TEMPLATE),
-    (MULTI_QUERY_PROMPT_NAME, MULTI_QUERY_SYSTEM_TEXT, MULTI_QUERY_HUMAN_TEMPLATE),
+    (SEARCH_EXPANSION_PROMPT_NAME, SEARCH_EXPANSION_SYSTEM_TEXT, SEARCH_EXPANSION_HUMAN_TEMPLATE),
     (ROUTE_PROMPT_NAME, ROUTE_SYSTEM_TEXT, ROUTE_HUMAN_TEMPLATE),
 ]
