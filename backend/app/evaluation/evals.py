@@ -30,11 +30,18 @@ test_dataset = [
 ]
 
 
+import uuid
+
+
 def my_rag_task(dataset_item: dict):
     question = dataset_item["input"]
     logger.info(f"\nEvaluating Question: {question}")
-    final_state = app_agent.invoke({"question": question})
-    return {"output": final_state["answer"], "context": final_state["context"]}
+    thread_id = str(uuid.uuid4())
+    final_state = app_agent.invoke(
+        {"question": question},
+        config={"configurable": {"thread_id": thread_id}},
+    )
+    return {"output": final_state.get("answer", ""), "context": final_state.get("context", [])}
 
 
 def run_eval_pipeline_if_needed() -> None:
