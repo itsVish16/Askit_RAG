@@ -1,5 +1,7 @@
 import asyncio
+
 from app.agent.tools import retrieve_docs_async
+
 
 async def main():
     # Provide a dummy user_id or None to see if it searches.

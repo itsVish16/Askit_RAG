@@ -1,5 +1,6 @@
+
 from PIL import Image
-import sys
+
 
 def autocrop(image_path):
     print(f"Processing {image_path}...")

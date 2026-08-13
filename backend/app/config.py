@@ -27,17 +27,9 @@ class Config:
     QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "askit-docs-fireworks")
     QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", "60"))
 
-    # --- Ingestion Config
-    INGEST_SUPPORTED_EXTENSIONS: str = "pdf,txt,md,png,jpg,jpeg"
-    MAX_PDF_SIZE_MB: int = 10
-    MAX_PDF_PAGES: int = 150
-    MAX_PDFS_PER_USER: int = 20
-    INGEST_UPLOAD_DIR: str = "data/uploads"
-    INGEST_KEEP_PDF_AFTER_SUCCESS: bool = False
-    CHUNK_SIZE: int = 1000
-    CHUNK_OVERLAP: int = 200
-    INGEST_BATCH_SIZE: int = 100
-    INGEST_PARQUET_PATH: str = "data/dataset/covid_qa_train.parquet"
+    CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "850"))
+    CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "100"))
+    INGEST_BATCH_SIZE: int = int(os.getenv("INGEST_BATCH_SIZE", "16"))
 
     # --- Models ---
     EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "nomic-ai/nomic-embed-text-v1")

@@ -54,6 +54,7 @@ async def lifespan(_: FastAPI):
 
     def run_evals_delayed():
         import time
+
         from app.evaluation.evals import run_eval_pipeline_if_needed
         logger.info("[startup] Waiting 10s before checking/running automated evals...")
         time.sleep(10)
