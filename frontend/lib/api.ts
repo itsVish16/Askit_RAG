@@ -1,4 +1,12 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+export function getBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    return process.env.NEXT_PUBLIC_API_URL;
+  }
+  if (typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return "http://localhost:8000";
+}
 
 export class ApiError extends Error {
   status: number;
@@ -48,7 +56,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.body && !(init.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(`${BASE}${path}`, { ...init, headers });
+
+  let res: Response;
+  try {
+    res = await fetch(`${getBaseUrl()}${path}`, { ...init, headers });
+  } catch (err: unknown) {
+    throw new ApiError(500, err instanceof Error ? err.message : "Failed to connect to backend server");
+  }
+
   if (res.status === 401) {
     setToken(null);
     if (typeof window !== "undefined") window.location.href = "/login";
@@ -98,7 +113,7 @@ export function askStream(
   const token = getToken();
   const ac = new AbortController();
 
-  fetch(`${BASE}/ask/stream`, {
+  fetch(`${getBaseUrl()}/ask/stream`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
