@@ -15,6 +15,18 @@ _client_lock = threading.Lock()
 _client_initialized = False
 
 
+def _get_sqs_region() -> str:
+    """Infer region from SQS_QUEUE_URL or fallback to AWS_REGION."""
+    if settings.SQS_QUEUE_URL and "sqs." in settings.SQS_QUEUE_URL and ".amazonaws.com" in settings.SQS_QUEUE_URL:
+        try:
+            domain = settings.SQS_QUEUE_URL.split("sqs.", 1)[1].split(".amazonaws.com", 1)[0]
+            if domain:
+                return domain
+        except Exception:
+            pass
+    return settings.AWS_REGION
+
+
 def _sqs():
     """Lazily build the SQS client."""
     global _client, _client_initialized
@@ -23,7 +35,7 @@ def _sqs():
     with _client_lock:
         if _client_initialized:
             return _client
-        kwargs = {"region_name": settings.AWS_REGION}
+        kwargs = {"region_name": _get_sqs_region()}
         if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
             kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
             kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
