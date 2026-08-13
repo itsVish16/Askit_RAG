@@ -35,4 +35,3 @@ services:
 
 volumes:
   askit-models:
-    description: "Volume for caching huggingface models and rerankers"
