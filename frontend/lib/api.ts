@@ -27,11 +27,13 @@ export function setToken(token: string | null) {
   else localStorage.removeItem("askit_token");
 }
 
+import { generateUUID } from "./uuid";
+
 export function getSessionId(): string {
   if (typeof window === "undefined") return "";
   let s = localStorage.getItem("askit_session");
   if (!s) {
-    s = crypto.randomUUID();
+    s = generateUUID();
     localStorage.setItem("askit_session", s);
   }
   return s;
