@@ -52,13 +52,20 @@ export default function DocumentsPanel() {
       );
 
       if (presign) {
-        const putRes = await fetch(presign.upload_url, {
-          method: "PUT",
-          body: file,
-          headers: { "Content-Type": file.type || "application/octet-stream" },
-        });
-        if (!putRes.ok) throw new ApiError(putRes.status, "S3 upload failed");
-        await api.post("/ingest/s3", { file_key: presign.file_key, filename: file.name });
+        try {
+          const putRes = await fetch(presign.upload_url, {
+            method: "PUT",
+            body: file,
+            headers: { "Content-Type": file.type || "application/octet-stream" },
+          });
+          if (!putRes.ok) throw new ApiError(putRes.status, "S3 upload failed");
+          await api.post("/ingest/s3", { file_key: presign.file_key, filename: file.name });
+        } catch (s3Err) {
+          console.warn("Direct S3 upload failed (e.g. S3 bucket CORS), falling back to backend upload:", s3Err);
+          const fd = new FormData();
+          fd.append("file", file);
+          await api.postForm("/ingest/pdf", fd);
+        }
       } else {
         // Fallback: multipart directly to backend.
         const fd = new FormData();
