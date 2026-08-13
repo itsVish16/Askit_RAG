@@ -149,7 +149,7 @@ async def ask_stream(
                     
                     # Only stream tokens from the generation nodes.
                     node_name = event.get("metadata", {}).get("langgraph_node")
-                    if node_name not in ["rag", "chitchat"]:
+                    if node_name not in ["rag", "chitchat", "history"]:
                         continue
 
                     chunk = event["data"].get("chunk")
