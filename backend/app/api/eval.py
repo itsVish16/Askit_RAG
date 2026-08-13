@@ -1,7 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 
-from app.api.deps import get_current_user
-from app.core.security import UserPublic
 from app.evaluation.results import latest_eval_results
 
 router = APIRouter(prefix="/eval", tags=["eval"])
