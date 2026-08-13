@@ -48,3 +48,13 @@ ignore = [
     "PLR0402", # manual-from-import: test fixtures use `import x.y as z` for importlib.reload
     "RUF059",  # unused-unpacked-variable: conventional `_` / tuple unpacking in scrolls
 ]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
