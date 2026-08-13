@@ -42,9 +42,11 @@ export async function removeSession(sessionId: string): Promise<void> {
   localRemove(sessionId);
 }
 
+import { generateUUID } from "./uuid";
+
 /** Start a new conversation (new session_id, clear local cache). */
 export function newConversation(): string {
-  const newId = crypto.randomUUID();
+  const newId = generateUUID();
   setSessionId(newId);
   return newId;
 }

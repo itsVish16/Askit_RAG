@@ -10,6 +10,7 @@ import {
   ChatMessage,
 } from "@/lib/api";
 import { newConversation } from "@/lib/sessions";
+import { generateUUID } from "@/lib/uuid";
 
 interface Turn {
   id: string;
@@ -21,9 +22,7 @@ interface Turn {
   queries: string[];
 }
 
-
-
-export default function AskPanel() {
+export default function AskPanel({ refreshKey }: { refreshKey?: number }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,7 +45,7 @@ export default function AskPanel() {
           const ai = msgs[i + 1];
           if (human && human.role === "human") {
             loaded.push({
-              id: crypto.randomUUID(),
+              id: generateUUID(),
               question: human.content,
               answer: ai?.content || "",
               isStreaming: false,
@@ -58,7 +57,7 @@ export default function AskPanel() {
         setTurns(loaded);
       })
       .catch(() => {});
-  }, []);
+  }, [refreshKey]);
 
   // Auto-scroll.
   useEffect(() => {
@@ -72,7 +71,7 @@ export default function AskPanel() {
     setErr(null);
     setQuery("");
 
-    const turnId = crypto.randomUUID();
+    const turnId = generateUUID();
     const newTurn: Turn = {
       id: turnId,
       question: q,
