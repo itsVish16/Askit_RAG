@@ -222,7 +222,7 @@ async def get_session_messages(session_id: str, current_user: UserPublic = Depen
     """Get all messages for a session. Verifies ownership."""
     sess = get_session(session_id)
     if sess is None:
-        raise HTTPException(status_code=404, detail="Session not found.")
+        return []
     if sess["user_id"] != current_user.id:
         raise HTTPException(status_code=404, detail="Session not found.")
     return get_messages(session_id)
