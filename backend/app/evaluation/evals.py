@@ -30,6 +30,7 @@ test_dataset = [
 ]
 
 
+import asyncio
 import uuid
 
 
@@ -37,9 +38,11 @@ def my_rag_task(dataset_item: dict):
     question = dataset_item["input"]
     logger.info(f"\nEvaluating Question: {question}")
     thread_id = str(uuid.uuid4())
-    final_state = app_agent.invoke(
-        {"question": question},
-        config={"configurable": {"thread_id": thread_id}},
+    final_state = asyncio.run(
+        app_agent.ainvoke(
+            {"question": question},
+            config={"configurable": {"thread_id": thread_id}},
+        )
     )
     return {"output": final_state.get("answer", ""), "context": final_state.get("context", [])}
 

@@ -4,9 +4,9 @@ import random
 from collections import OrderedDict
 from pathlib import Path
 
+import httpx
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
-from sentence_transformers import CrossEncoder
 
 from app.config import settings
 from app.core.logger import get_logger
@@ -19,42 +19,102 @@ from app.db.qdrant import (
 
 logger = get_logger(__name__)
 
-# Reranker config
-reranker: CrossEncoder | None = None
+
+class FireworksReranker:
+    """Client for the Fireworks / Cohere-compatible Cloud Reranker API."""
+
+    def __init__(self, api_key: str, url: str, model: str):
+        self.api_key = api_key
+        self.url = url
+        self.model = model
+
+    def rerank(self, query: str, texts: list[str], top_n: int = 5) -> list[str]:
+        if not texts:
+            return []
+        if not self.api_key:
+            logger.warning("[reranker] FIREWORKS_RERANK_API_KEY is not set — returning original candidate order.")
+            return texts[:top_n]
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        payload = {
+            "model": self.model,
+            "query": query,
+            "documents": texts,
+            "top_n": top_n,
+            "return_documents": False,
+        }
+
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.post(self.url, headers=headers, json=payload)
+                if response.status_code != 200:
+                    logger.warning(
+                        f"[reranker] Fireworks API returned HTTP {response.status_code}: {response.text} — "
+                        "falling back to original order."
+                    )
+                    return texts[:top_n]
+
+                data = response.json()
+                results = data.get("results", [])
+                if not results:
+                    return texts[:top_n]
+
+                sorted_results = sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True)
+                sorted_indices = [item["index"] for item in sorted_results if "index" in item]
+                ranked_docs = [texts[idx] for idx in sorted_indices if idx < len(texts)]
+
+                for t in texts:
+                    if t not in ranked_docs and len(ranked_docs) < top_n:
+                        ranked_docs.append(t)
+
+                return ranked_docs[:top_n]
+        except Exception as exc:
+            logger.warning(f"[reranker] HTTP call failed: {type(exc).__name__}: {exc} — fallback to original order.")
+            return texts[:top_n]
+
+
+# Reranker instance singleton
+reranker: FireworksReranker | None = None
 _reranker_initialized: bool = False
+
 
 class LRUCache:
     def __init__(self, capacity: int):
         self.cache = OrderedDict()
         self.capacity = capacity
+
     def get(self, key):
-        if key not in self.cache: return None
+        if key not in self.cache:
+            return None
         self.cache.move_to_end(key)
         return self.cache[key]
+
     def put(self, key, value):
         self.cache[key] = value
         self.cache.move_to_end(key)
         if len(self.cache) > self.capacity:
             self.cache.popitem(last=False)
 
+
 rerank_cache = LRUCache(10000)
 
-def get_reranker() -> CrossEncoder | None:
-    """Return the cached cross-encoder, loading on first use. Caches None on
-    failure so one bad load never kills more than the first rerank attempt."""
+
+def get_reranker() -> FireworksReranker | None:
+    """Return the cached Fireworks cloud reranker client."""
     global reranker, _reranker_initialized
     if _reranker_initialized:
         return reranker
     _reranker_initialized = True
-    try:
-        reranker = CrossEncoder(settings.RERANKER_MODEL_NAME)
-        logger.info(f"[reranker] loaded {settings.RERANKER_MODEL_NAME} OK.")
-    except Exception as exc:
-        reranker = None
-        logger.warning(
-            f"[reranker] FAILED to load {settings.RERANKER_MODEL_NAME}: "
-            f"{type(exc).__name__}: {exc} — streaming without reranking."
-        )
+    reranker = FireworksReranker(
+        api_key=settings.FIREWORKS_RERANK_API_KEY,
+        url=settings.FIREWORKS_RERANK_URL,
+        model=settings.RERANKER_MODEL_NAME,
+    )
+    logger.info(f"[reranker] initialized Fireworks API reranker ({settings.RERANKER_MODEL_NAME}) OK.")
     return reranker
 
 
@@ -283,29 +343,17 @@ async def retrieve_candidates(
 def rerank_texts(query: str, texts: list[str], k_final: int = 5) -> list[str]:
     if not texts:
         return []
-    
-    encoder = get_reranker()
-    if encoder is None:
-        return texts[:k_final]
-        
-    pairs_to_score = []
-    scores_dict = {}
-    
+
     # 1. Check LRU Cache
-    for t in texts:
-        key = (query, t)
-        cached = rerank_cache.get(key)
-        if cached is not None:
-            scores_dict[t] = cached
-        else:
-            pairs_to_score.append(t)
-            
-    # 2. Score remaining pairs in a fast batch
-    if pairs_to_score:
-        new_scores = encoder.predict([(query, t) for t in pairs_to_score])
-        for t, s in zip(pairs_to_score, new_scores):
-            scores_dict[t] = s
-            rerank_cache.put((query, t), s)
-            
-    ranked = sorted(zip([scores_dict[t] for t in texts], texts, strict=True), key=lambda st: st[0], reverse=True)
-    return [t for _, t in ranked[:k_final]]
+    cache_key = (query, tuple(texts), k_final)
+    cached = rerank_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    reranker_client = get_reranker()
+    if reranker_client is None:
+        return texts[:k_final]
+
+    ranked = reranker_client.rerank(query, texts, top_n=k_final)
+    rerank_cache.put(cache_key, ranked)
+    return ranked

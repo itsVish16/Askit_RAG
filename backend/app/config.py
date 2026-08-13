@@ -41,11 +41,17 @@ class Config:
 
     # --- Models ---
     EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "nomic-ai/nomic-embed-text-v1")
-    # Cross-encoder reranker (on-device, sentence-transformers). VERIFIED BEST:
-    # bge-reranker-v2-m3 (568M) scored WORSE on answer_relevance (0.823 vs
-    # 0.859) at 25x the size. Uses the HF cache (HF_HOME).
-    RERANKER_MODEL_NAME = os.getenv(
-        "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L6-v2"
+    # Cloud Reranker API (supports Fireworks dedicated key FIREWORKS_API_KEY_O or fallback)
+    FIREWORKS_RERANK_API_KEY: str = (
+        os.getenv("FIREWORKS_API_KEY_O")
+        or os.getenv("FIREWORKS_RERANK_API_KEY")
+        or os.getenv("FIREWORKS_API_KEY", "")
+    )
+    FIREWORKS_RERANK_URL: str = os.getenv(
+        "FIREWORKS_RERANK_URL", "https://api.fireworks.ai/inference/v1/rerank"
+    )
+    RERANKER_MODEL_NAME: str = os.getenv(
+        "RERANKER_MODEL_NAME", "accounts/fireworks/models/qwen3-reranker-8b"
     )
 
     # --- Vision extraction (scanned PDFs / image uploads) ---
