@@ -59,7 +59,7 @@ class FireworksReranker:
                     return texts[:top_n]
 
                 data = response.json()
-                results = data.get("results", [])
+                results = data.get("data") or data.get("results") or []
                 if not results:
                     return texts[:top_n]
 
