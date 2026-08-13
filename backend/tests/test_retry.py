@@ -9,8 +9,9 @@ We monkeypatch `asyncio.sleep` to keep the test instant — the real sleep
 durations are exponential-and-jittered and would slow the suite to
 seconds per case otherwise.
 """
+
 import pytest
-import asyncio
+
 from app.db import retrievers
 
 

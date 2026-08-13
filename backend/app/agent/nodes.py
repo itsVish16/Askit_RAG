@@ -24,36 +24,88 @@ _SYSTEM_PROMPT = (
 )
 
 class RouteDecision(BaseModel):
-    route: Literal["rag", "chitchat"] = Field(
-        description="Choose 'rag' if the user is asking a question that requires domain knowledge or document retrieval. Choose 'chitchat' if the user is just saying hello, giving a casual greeting, or asking a generic conversational question that requires no external knowledge."
+    route: Literal["rag", "history", "chitchat"] = Field(
+        description=(
+            "Choose 'chitchat' for basic conversational greetings (e.g. 'hello', 'hi', 'thanks', 'bye'). "
+            "Choose 'history' if the user's question can be directly and accurately answered from the existing conversation history alone (e.g., repeating a previous question, asking for clarification on the previous answer, summarizing what was just discussed, or asking follow-ups about topics already covered in the chat). "
+            "Choose 'rag' if the user is asking for new information, facts, data, or documents that are NOT already answered or present in the conversation history."
+        )
     )
 
 async def router_node(state: GraphState) -> dict:
-    """Classifies the user query to decide whether to run full RAG or fast chitchat."""
+    """Classifies the user query to decide whether to run full RAG, memory-assisted history answer, or fast chitchat."""
     question = state["question"]
+    history = state.get("chat_history", []) or []
     
     if not settings.ROUTE_ENABLED:
         return {"route": "rag"}
         
-    # Use LLM to classify intent
-    # Fast lightweight prompt
+    # Format recent history (up to last 6 turns) so router has context
+    history_summary = []
+    for msg in history[-6:]:
+        role = "User" if isinstance(msg, HumanMessage) else "Assistant"
+        content_preview = str(msg.content)[:300]
+        history_summary.append(f"{role}: {content_preview}")
+        
+    history_context = "\n".join(history_summary) if history_summary else "None (Start of conversation)"
+    
     messages = [
         SystemMessage(content=(
-            "You are a strict routing assistant. Your job is to classify user queries.\n"
-            "Route to 'rag' for ANY question asking for information, facts, data, projects, or documents.\n"
-            "Route to 'chitchat' ONLY for basic conversational greetings (e.g., 'hello', 'hi', 'how are you').\n"
-            "When in doubt, always choose 'rag'."
+            "You are a strict routing assistant for a document Q&A assistant.\n"
+            "Analyze the user's new question in light of the prior conversation history.\n\n"
+            "Routing Rules:\n"
+            "1. 'chitchat': Basic casual greetings or pleasantries (e.g., 'hello', 'hi', 'how are you', 'thank you', 'who are you').\n"
+            "2. 'history': Use this if the user's question is a repeat, summary, clarification, or follow-up that can be answered directly from the previous Assistant responses in the conversation history without searching the document database again.\n"
+            "3. 'rag': Use this if the user is asking about new facts, topics, or documents not found in the conversation history.\n"
+            "When in doubt, choose 'rag'."
         )),
-        HumanMessage(content=question)
+        HumanMessage(content=(
+            f"Prior Conversation History:\n{history_context}\n\n"
+            f"New User Question: {question}"
+        ))
     ]
     
     try:
         classifier = router_llm.with_config(tags=["router"]).with_structured_output(RouteDecision)
         decision = await classifier.ainvoke(messages)
+        if decision.route == "history" and not history:
+            return {"route": "rag"}
         return {"route": decision.route}
     except Exception as exc:
         logger.warning(f"[router] classification failed: {exc} — falling back to rag")
         return {"route": "rag"}
+
+
+async def history_node(state: GraphState) -> dict:
+    """Answers follow-up / repeat / summary questions directly from conversation history (skipping vector retrieval)."""
+    question = state["question"]
+    history = state.get("chat_history", []) or []
+    
+    messages = [
+        SystemMessage(content=(
+            "You are a helpful research assistant. Answer the user's question directly based on the "
+            "conversation history. Be concise, accurate, and helpful. Do not invent facts."
+        ))
+    ]
+    messages.extend(history)
+    messages.append(HumanMessage(content=question))
+    
+    response = await llm.with_config({"run_name": "final_generation"}).ainvoke(messages)
+    answer = response.content
+    
+    persisted = [
+        HumanMessage(content=question),
+        AIMessage(content=answer),
+    ]
+    
+    return {
+        "answer": answer,
+        "chat_history": persisted,
+        "context": [],
+        "queries": [],
+        "keywords": [],
+        "num_candidates": 0,
+    }
 
 
 async def chitchat_node(state: GraphState) -> dict:

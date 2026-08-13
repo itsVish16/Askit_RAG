@@ -27,25 +27,23 @@ class Config:
     QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "askit-docs-fireworks")
     QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", "60"))
 
-    # --- Ingestion Config
-    INGEST_SUPPORTED_EXTENSIONS: str = "pdf,txt,md,png,jpg,jpeg"
-    MAX_PDF_SIZE_MB: int = 10
-    MAX_PDF_PAGES: int = 150
-    MAX_PDFS_PER_USER: int = 20
-    INGEST_UPLOAD_DIR: str = "data/uploads"
-    INGEST_KEEP_PDF_AFTER_SUCCESS: bool = False
-    CHUNK_SIZE: int = 1000
-    CHUNK_OVERLAP: int = 200
-    INGEST_BATCH_SIZE: int = 100
-    INGEST_PARQUET_PATH: str = "data/dataset/covid_qa_train.parquet"
+    CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "850"))
+    CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "100"))
+    INGEST_BATCH_SIZE: int = int(os.getenv("INGEST_BATCH_SIZE", "16"))
 
     # --- Models ---
     EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "nomic-ai/nomic-embed-text-v1")
-    # Cross-encoder reranker (on-device, sentence-transformers). VERIFIED BEST:
-    # bge-reranker-v2-m3 (568M) scored WORSE on answer_relevance (0.823 vs
-    # 0.859) at 25x the size. Uses the HF cache (HF_HOME).
-    RERANKER_MODEL_NAME = os.getenv(
-        "RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L6-v2"
+    # Cloud Reranker API (supports Fireworks dedicated key FIREWORKS_API_KEY_O or fallback)
+    FIREWORKS_RERANK_API_KEY: str = (
+        os.getenv("FIREWORKS_API_KEY_O")
+        or os.getenv("FIREWORKS_RERANK_API_KEY")
+        or os.getenv("FIREWORKS_API_KEY", "")
+    )
+    FIREWORKS_RERANK_URL: str = os.getenv(
+        "FIREWORKS_RERANK_URL", "https://api.fireworks.ai/inference/v1/rerank"
+    )
+    RERANKER_MODEL_NAME: str = os.getenv(
+        "RERANKER_MODEL_NAME", "accounts/fireworks/models/qwen3-reranker-8b"
     )
 
     # --- Vision extraction (scanned PDFs / image uploads) ---

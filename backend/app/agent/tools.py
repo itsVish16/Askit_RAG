@@ -1,6 +1,7 @@
 """Async document retrieval tools."""
 
 import asyncio
+
 from pydantic import BaseModel, Field
 
 from app.config import settings

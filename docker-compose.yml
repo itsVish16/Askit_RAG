@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build:
@@ -8,7 +6,6 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - askit-models:/models
       - ./backend/data:/app/data
     env_file:
       - ./backend/.env
@@ -30,6 +27,3 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
-
-volumes:
-  askit-models:

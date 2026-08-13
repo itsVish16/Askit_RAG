@@ -149,7 +149,7 @@ async def ask_stream(
                     
                     # Only stream tokens from the generation nodes.
                     node_name = event.get("metadata", {}).get("langgraph_node")
-                    if node_name not in ["rag", "chitchat"]:
+                    if node_name not in ["rag", "chitchat", "history"]:
                         continue
 
                     chunk = event["data"].get("chunk")
@@ -158,8 +158,8 @@ async def ask_stream(
                         tok_count += 1
                         if tok_count % 3 == 0:  # batch tokens for fewer SSE messages
                             yield f"data: {json.dumps({'event': 'token', 'token': full_answer})}\n\n"
-        except Exception as e:
-            log.error(f"Error during agent.astream_events: {e}", exc_info=True)
+        except Exception:
+            log.exception("Error during agent.astream_events")
 
         log.info(f"astream_events completed. Fetching state for session {session_id}")
 
@@ -169,8 +169,8 @@ async def ask_stream(
             final_answer = (state.values.get("answer") or full_answer) if state else full_answer
             ctx = state.values.get("context", []) if state else []
             queries = state.values.get("queries", []) if state else []
-        except Exception as e:
-            log.error(f"Error getting state: {e}", exc_info=True)
+        except Exception:
+            log.exception("Error getting state")
             final_answer = full_answer
             ctx = []
             queries = []

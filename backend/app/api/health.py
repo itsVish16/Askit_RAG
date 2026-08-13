@@ -46,13 +46,14 @@ async def ready():
     except Exception as exc:
         checks.append(("reranker", "down", f"{type(exc).__name__}: {exc}"))
 
-    from app.db.retrievers import _bm25_cache
-    if any(v is not None for v in _bm25_cache.values()):
-        checks.append(("bm25", "ok", "cached"))
-    elif _bm25_cache:
-        checks.append(("bm25", "degraded", "Qdrant was down at startup; dense-only"))
-    else:
-        checks.append(("bm25", "pending", "not yet built; first request triggers build"))
+    try:
+        from app.db.retrievers import _bm25_cache_global, _user_bm25_cache
+        if _bm25_cache_global is not None or any(v is not None for v in _user_bm25_cache.values()):
+            checks.append(("bm25", "ok", "cached"))
+        else:
+            checks.append(("bm25", "pending", "not yet built; first request triggers build"))
+    except Exception as exc:
+        checks.append(("bm25", "down", f"{type(exc).__name__}: {exc}"))
 
     missing = validate_required_config()
     if missing:
