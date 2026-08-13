@@ -29,6 +29,7 @@ dependencies = [
     "pymupdf>=1.25.0",
     "python-multipart>=0.0.32",
     "boto3>=1.43.62",
+    "torch",
 ]
 
 [dependency-groups]
@@ -50,9 +51,7 @@ ignore = [
 ]
 
 [tool.uv.sources]
-torch = [
-  { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
-]
+torch = { index = "pytorch-cpu" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
