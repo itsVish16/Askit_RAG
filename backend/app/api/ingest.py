@@ -167,6 +167,45 @@ async def ingest_status_endpoint(job_id: str, current_user: UserPublic = Depends
     )
 
 
+@router.delete("/ingest/jobs/{job_id}", status_code=204)
+async def delete_job_endpoint(job_id: str, current_user: UserPublic = Depends(get_current_user)):
+    """Delete a user's uploaded document, removing vector embeddings, cache, and files."""
+    job = ingest_status.delete_job(job_id, current_user.id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    # 1. Clean up vectors in Qdrant if job was completed and has chunks
+    sha = job.get("sha256")
+    num_chunks = job.get("num_chunks")
+    if sha and num_chunks and num_chunks > 0:
+        try:
+            from qdrant_client.models import PointIdsList
+            from app.db.qdrant import qdrant_client
+            from app.ingest_worker.repo import chunk_ids
+
+            ids = chunk_ids(current_user.id, sha, num_chunks)
+            qdrant_client.delete(
+                collection_name=settings.QDRANT_COLLECTION,
+                points_selector=PointIdsList(points=ids),
+            )
+        except Exception:
+            pass  # Non-fatal if vectors already cleaned or Qdrant transient issue
+
+    # 2. Invalidate BM25 cache for the user so deleted chunks are not searched
+    from app.db.retrievers import invalidate_user_bm25_cache
+
+    invalidate_user_bm25_cache(current_user.id)
+
+    # 3. Clean up local disk file if present
+    file_path = job.get("file_path")
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+
+
+
 class PresignIn(BaseModel):
     filename: str = "upload.pdf"
 

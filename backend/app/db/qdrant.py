@@ -19,12 +19,14 @@ qdrant_client = QdrantClient(
     api_key=settings.QDRANT_API_KEY,
     url=settings.QDRANT_URL,
     timeout=settings.QDRANT_TIMEOUT,
+    check_compatibility=False,
 )
 
 async_qdrant_client = AsyncQdrantClient(
     api_key=settings.QDRANT_API_KEY,
     url=settings.QDRANT_URL,
     timeout=settings.QDRANT_TIMEOUT,
+    check_compatibility=False,
 )
 
 # Caches that the metadata.user_id keyword payload index exists, so we don't

@@ -213,7 +213,7 @@ export default function Dashboard() {
         <div className="mx-auto max-w-5xl p-4 sm:p-8">
           {/* Always render AskPanel — hidden class preserves its state across tab switches */}
           <div className={tab === "ask" ? "h-[calc(100vh-6rem)] sm:h-[calc(100vh-4rem)]" : "hidden"}>
-            <AskPanel key={sessionRefreshKey} />
+            <AskPanel refreshKey={sessionRefreshKey} />
           </div>
           {tab === "experiment" && <EvalPanel />}
           {tab === "documents" && <DocumentsPanel />}

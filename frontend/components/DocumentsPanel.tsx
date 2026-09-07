@@ -16,6 +16,8 @@ export default function DocumentsPanel() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -28,6 +30,24 @@ export default function DocumentsPanel() {
       setLoading(false);
     }
   }, []);
+
+  async function onDelete(jobId: string) {
+    if (confirmId === jobId) {
+      setDeletingId(jobId);
+      try {
+        await api.del(`/ingest/jobs/${jobId}`);
+        setJobs((prev) => prev.filter((j) => j.job_id !== jobId));
+      } catch (e: unknown) {
+        setErr(e instanceof Error ? e.message : "Failed to delete document");
+      } finally {
+        setDeletingId(null);
+        setConfirmId(null);
+      }
+    } else {
+      setConfirmId(jobId);
+      setTimeout(() => setConfirmId(null), 3000);
+    }
+  }
 
   useEffect(() => {
     refresh();
@@ -148,13 +168,35 @@ export default function DocumentsPanel() {
                   {j.error ? ` · ${j.error}` : ""}
                 </p>
               </div>
-              <span
-                className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ${
-                  STATE_STYLE[j.state || "PENDING"] || STATE_STYLE.PENDING
-                }`}
-              >
-                {j.state || "PENDING"}
-              </span>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ${
+                    STATE_STYLE[j.state || "PENDING"] || STATE_STYLE.PENDING
+                  }`}
+                >
+                  {j.state || "PENDING"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onDelete(j.job_id)}
+                  disabled={deletingId === j.job_id}
+                  className={`shrink-0 rounded p-1 text-xs transition-colors ${
+                    confirmId === j.job_id
+                      ? "bg-red-50 text-red-600 font-semibold ring-1 ring-red-200"
+                      : "text-zinc-400 hover:text-red-500 hover:bg-zinc-100"
+                  }`}
+                  title={confirmId === j.job_id ? "Click again to confirm delete" : "Delete document"}
+                >
+                  {confirmId === j.job_id ? (
+                    "Delete?"
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
           ))}
         </div>

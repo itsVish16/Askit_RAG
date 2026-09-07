@@ -21,13 +21,23 @@ from app.db.retrievers import get_bm25_retriever, get_reranker
 
 logger = get_logger(__name__)
 
-# Each item carries its ground-truth answer so Opik scores against the real
-# answer, not just plausibility.
-df = pd.read_parquet(settings.EVAL_PARQUET_PATH).head(settings.EVAL_SAMPLE_SIZE)
-test_dataset = [
-    {"input": row["question"], "expected_output": row["response"]}
-    for _, row in df.iterrows()
-]
+def load_eval_dataset() -> list[dict]:
+    """Load evaluation test split safely. Returns [] if parquet file is missing."""
+    import os
+    if not os.path.exists(settings.EVAL_PARQUET_PATH):
+        logger.warning(
+            f"[evals] Parquet file not found at {settings.EVAL_PARQUET_PATH} — skipping evals."
+        )
+        return []
+    try:
+        df = pd.read_parquet(settings.EVAL_PARQUET_PATH).head(settings.EVAL_SAMPLE_SIZE)
+        return [
+            {"input": row["question"], "expected_output": row["response"]}
+            for _, row in df.iterrows()
+        ]
+    except Exception as exc:
+        logger.error(f"[evals] Failed to load parquet dataset: {exc}")
+        return []
 
 
 import asyncio
@@ -52,6 +62,11 @@ def run_eval_pipeline_if_needed() -> None:
 
     if latest_eval_results() is not None:
         logger.info("[evals] Eval results already cached in database. Skipping automated evals.")
+        return
+
+    test_dataset = load_eval_dataset()
+    if not test_dataset:
+        logger.warning("[evals] No test items available — automated evals skipped.")
         return
 
     logger.info("Starting Automated Evals...")

@@ -143,11 +143,10 @@ async def rag_agent_node(state: GraphState) -> dict:
     user_id = state.get("user_id")
 
     # Fetch context concurrently
-    context_text, queries, keywords = await retrieve_docs_async(question, user_id)
+    context_text, queries, keywords, chunks = await retrieve_docs_async(question, user_id)
     
-    # Store raw context chunks for the UI response
-    found_docs = context_text != "No relevant documents found." and context_text != "No documents available (user not set)."
-    raw_contexts = [context_text] if found_docs else []
+    # Store discrete context chunks for the UI response
+    raw_contexts = chunks if chunks else []
 
     # Build prompt
     augmented_question = (

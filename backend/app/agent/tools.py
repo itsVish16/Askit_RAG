@@ -22,10 +22,10 @@ async def generate_search_expansion(query: str) -> SearchExpansion:
     )
     return res
 
-async def retrieve_docs_async(query: str, user_id: str | None) -> tuple[str, list[str], list[str]]:
+async def retrieve_docs_async(query: str, user_id: str | None) -> tuple[str, list[str], list[str], list[str]]:
     """Search the user's uploaded documents for relevant information concurrently."""
     if not user_id:
-        return "No documents available (user not set).", [query], []
+        return "No documents available (user not set).", [query], [], []
 
     k = settings.K_RETRIEVE
 
@@ -65,10 +65,10 @@ async def retrieve_docs_async(query: str, user_id: str | None) -> tuple[str, lis
     reranked = await asyncio.to_thread(rerank_texts, query, pool_list, settings.K_FINAL)
     
     if not reranked:
-        return "No relevant documents found.", all_queries, keywords
+        return "No relevant documents found.", all_queries, keywords, []
 
     context_text = "\n\n---\n\n".join(
         f"Chunk {i + 1}: {chunk}" for i, chunk in enumerate(reranked)
     )
     
-    return context_text, all_queries, keywords
+    return context_text, all_queries, keywords, reranked

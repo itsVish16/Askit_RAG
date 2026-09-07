@@ -59,6 +59,7 @@ def _init_db() -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         _conn = sqlite3.connect(path, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA foreign_keys = ON;")
         _conn.executescript(_SQL)
         _conn.commit()
         _conn_initialized = True
@@ -171,6 +172,11 @@ def get_session(session_id: str) -> dict | None:
 def delete_session(session_id: str, user_id: str) -> bool:
     """Delete a session AND its messages. Returns True if a row was deleted."""
     conn = _get_conn()
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute(
+        "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE id = ? AND user_id = ?)",
+        (session_id, user_id),
+    )
     cur = conn.execute(
         "DELETE FROM sessions WHERE id = ? AND user_id = ?",
         (session_id, user_id),

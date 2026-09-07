@@ -101,3 +101,24 @@ def test_list_pending_jobs(status_module):
 
 def test_get_unknown_job_returns_none(status_module):
     assert status_module.get_job("does_not_exist") is None
+
+
+def test_delete_job_success(status_module):
+    status_module.create_job("j1", "u1", "/tmp/foo.pdf", "sha_foo")
+    status_module.set_state("j1", "COMPLETED", num_chunks=5)
+    deleted = status_module.delete_job("j1", "u1")
+    assert deleted is not None
+    assert deleted["job_id"] == "j1"
+    assert deleted["user_id"] == "u1"
+    assert deleted["sha256"] == "sha_foo"
+    assert status_module.get_job("j1") is None
+
+
+def test_delete_job_unauthorized_or_missing(status_module):
+    status_module.create_job("j1", "u1", "/tmp/foo.pdf", "sha_foo")
+    # Trying to delete another user's job returns None
+    assert status_module.delete_job("j1", "wrong_user") is None
+    assert status_module.get_job("j1") is not None
+    # Trying to delete non-existent job returns None
+    assert status_module.delete_job("non_existent", "u1") is None
+

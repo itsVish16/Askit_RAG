@@ -134,3 +134,20 @@ def count_user_completed_jobs(user_id: str) -> int:
             (user_id,),
         ).fetchone()
     return int(row["n"]) if row else 0
+
+
+def delete_job(job_id: str, user_id: str) -> dict | None:
+    """Delete a job if owned by user_id. Returns the deleted job dict or None."""
+    conn = _connect()
+    with _conn_lock:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE job_id = ? AND user_id = ?",
+            (job_id, user_id),
+        ).fetchone()
+        if not row:
+            return None
+        job_data = dict(row)
+        conn.execute("DELETE FROM jobs WHERE job_id = ? AND user_id = ?", (job_id, user_id))
+        conn.commit()
+        return job_data
+
