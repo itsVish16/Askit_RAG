@@ -73,14 +73,16 @@ def run_eval_pipeline_if_needed() -> None:
     from opik import Opik
     from opik.evaluation.models import LiteLLMChatModel
 
-    client = Opik()
+    client = Opik(project_name=settings.OPIK_PROJECT_NAME)
     dataset = client.get_or_create_dataset(name=settings.EVAL_DATASET_NAME)
     dataset.clear()  # one dataset per experiment — runs never contaminate each other
     dataset.insert(test_dataset)
 
+    # Use OpenAI-compatible provider with Nebius base URL
     custom_judge = LiteLLMChatModel(
-        model_name=f"fireworks_ai/{settings.FIREWORKS_MODEL_NAME}",
+        model_name=f"openai/{settings.FIREWORKS_MODEL_NAME}",
         api_key=settings.FIREWORKS_API_KEY,
+        api_base=settings.FIREWORKS_BASE_URL,
     )
 
     hallucination_metric = Hallucination(model=custom_judge)
@@ -114,20 +116,25 @@ def run_eval_pipeline_if_needed() -> None:
         dataset=dataset,
         task=my_rag_task,
         scoring_metrics=[hallucination_metric, relevance_metric, context_recall, context_precision],
+        project_name=settings.OPIK_PROJECT_NAME,
+        task_threads=2,
     )
 
     # Persist the per-metric averages so the frontend can display cached
-    # results without re-running the (paid) eval. Opik's evaluate() returns an
-    # experiment whose summary exposes metric averages.
+    # results without re-running the (paid) eval.
     metrics: dict[str, float] = {}
     try:
-        summary = experiment.summary()
-        # summary() returns a dataframe-like object with a 'average_score' per metric.
-        for row in summary:
-            name = row.get("name") or row.get("metric") or row.get("metric_name")
-            score = row.get("average_score")
-            if name is not None and score is not None:
-                metrics[str(name)] = float(score)
+        metric_totals: dict[str, list[float]] = {}
+        for tr in experiment.test_results:
+            for sr in tr.score_results:
+                if sr.value is not None:
+                    metric_totals.setdefault(sr.name, []).append(float(sr.value))
+        for name, values in metric_totals.items():
+            if values:
+                avg = round(sum(values) / len(values), 4)
+                metrics[name] = avg
+                clean = name[:-7] if name.endswith("_metric") else name
+                metrics[clean] = avg
     except Exception as exc:
         logger.warning(f"[evals] could not extract metric summary: {exc}")
 
@@ -136,7 +143,12 @@ def run_eval_pipeline_if_needed() -> None:
 
         save_eval_results(metrics)
         logger.info(f"  [evals] cached metrics: {metrics}")
-    logger.info("Evals complete! Check your Opik Dashboard.")
+    
+    exp_url = getattr(experiment, "experiment_url", None)
+    if exp_url:
+        logger.info(f"Evals complete! Experiment URL: {exp_url}")
+    else:
+        logger.info("Evals complete! Check your Opik Dashboard.")
 
 if __name__ == "__main__":
     run_eval_pipeline_if_needed()

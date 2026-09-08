@@ -58,20 +58,20 @@ class FireworksReranker:
                 )
                 return texts[:top_n]
 
-                data = response.json()
-                results = data.get("data") or data.get("results") or []
-                if not results:
-                    return texts[:top_n]
+            data = response.json()
+            results = data.get("data") or data.get("results") or []
+            if not results:
+                return texts[:top_n]
 
-                sorted_results = sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True)
-                sorted_indices = [item["index"] for item in sorted_results if "index" in item]
-                ranked_docs = [texts[idx] for idx in sorted_indices if idx < len(texts)]
+            sorted_results = sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True)
+            sorted_indices = [item["index"] for item in sorted_results if "index" in item]
+            ranked_docs = [texts[idx] for idx in sorted_indices if idx < len(texts)]
 
-                for t in texts:
-                    if t not in ranked_docs and len(ranked_docs) < top_n:
-                        ranked_docs.append(t)
+            for t in texts:
+                if t not in ranked_docs and len(ranked_docs) < top_n:
+                    ranked_docs.append(t)
 
-                return ranked_docs[:top_n]
+            return ranked_docs[:top_n]
         except Exception as exc:
             logger.warning(f"[reranker] HTTP call failed: {type(exc).__name__}: {exc} — fallback to original order.")
             return texts[:top_n]

@@ -90,7 +90,7 @@ export default function EvalPanel() {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {METRICS.map((m) => {
-          const raw = data!.metrics[m.key] ?? 0;
+          const raw = data!.metrics[m.key] ?? data!.metrics[`${m.key}_metric`] ?? 0;
           const pct = Math.round(Math.max(0, Math.min(1, raw)) * 100);
           return (
             <div key={m.key} className="card p-5">

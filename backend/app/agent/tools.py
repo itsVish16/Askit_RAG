@@ -36,10 +36,7 @@ async def generate_search_expansion(query: str) -> SearchExpansion:
         return SearchExpansion(is_complex=False, keywords=clean_words[:6], variants=[])
 
 async def retrieve_docs_async(query: str, user_id: str | None) -> tuple[str, list[str], list[str], list[str]]:
-    """Search the user's uploaded documents for relevant information concurrently."""
-    if not user_id:
-        return "No documents available (user not set).", [query], [], []
-
+    """Search documents for relevant information concurrently (user-scoped or shared corpus)."""
     k = settings.K_RETRIEVE
 
     # 1. Expand query and extract keywords in a single structured call
