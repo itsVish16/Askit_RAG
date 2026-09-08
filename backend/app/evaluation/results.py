@@ -67,3 +67,16 @@ def latest_eval_results() -> dict | None:
     if row is None:
         return None
     return {"created_at": row["created_at"], "metrics": json.loads(row["metrics_json"])}
+
+
+def all_eval_results() -> list[dict]:
+    """Return all eval runs as a list of {id, created_at, metrics: {...}}, newest first."""
+    conn = _connect()
+    with _conn_lock:
+        rows = conn.execute(
+            "SELECT * FROM eval_runs ORDER BY created_at DESC"
+        ).fetchall()
+    return [
+        {"id": row["id"], "created_at": row["created_at"], "metrics": json.loads(row["metrics_json"])}
+        for row in rows
+    ]

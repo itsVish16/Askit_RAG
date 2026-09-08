@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_current_user
 from app.core.security import UserPublic
-from app.evaluation.results import latest_eval_results
+from app.evaluation.results import all_eval_results, latest_eval_results
 
 router = APIRouter(prefix="/eval", tags=["eval"])
 
@@ -15,3 +15,9 @@ async def eval_results(current_user: UserPublic = Depends(get_current_user)):
     if row is None:
         raise HTTPException(status_code=404, detail="No eval run cached yet.")
     return {"created_at": row["created_at"], "metrics": row["metrics"]}
+
+
+@router.get("/results/all")
+async def eval_results_all(current_user: UserPublic = Depends(get_current_user)):
+    """All cached eval runs, newest first."""
+    return all_eval_results()
