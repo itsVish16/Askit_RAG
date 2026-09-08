@@ -30,17 +30,15 @@ async def lifespan(_: FastAPI):
             + ". See .env.example for the full list."
         )
 
-    # Pre-build BM25 + warm the reranker so the first request doesn't pay
-    # index-build / model-load latency. Both fault-tolerant: a Qdrant blip at
-    # startup logs and continues so /ready can report it live.
-    logger.info("Pre-building BM25 index + warming reranker at startup...")
+    # Warm vectorstore & reranker so the first request doesn't pay
+    # connection/handshake latency. BM25 is built lazily on demand per user.
+    logger.info("Warming retrieval stack at startup...")
     try:
-        if await get_bm25_retriever(k=settings.K_RETRIEVE) is None:
-            logger.warning("[startup] BM25 unavailable (Qdrant empty/unreachable) — dense-only until Qdrant recovers.")
-        else:
-            logger.info("[startup] BM25 OK.")
+        from app.db.qdrant import get_vectorstore
+        get_vectorstore()
+        logger.info("[startup] VectorStore ready.")
     except Exception as exc:
-        logger.error(f"[startup] BM25 build failed (non-fatal): {type(exc).__name__}: {exc}")
+        logger.warning(f"[startup] VectorStore warmup (non-fatal): {exc}")
     try:
         get_reranker()
         logger.info("[startup] Reranker warmed.")

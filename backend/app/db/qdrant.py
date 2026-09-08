@@ -79,19 +79,26 @@ from langchain_classic.embeddings import CacheBackedEmbeddings
 from langchain_classic.storage import LocalFileStore
 
 
+_vectorstore_instance: QdrantVectorStore | None = None
+
+
 def get_vectorstore() -> QdrantVectorStore:
-    """Wrap the Qdrant collection as a LangChain VectorStore (creates the
-    collection first if needed). Search runs server-side on Qdrant."""
+    """Wrap the Qdrant collection as a LangChain VectorStore (singleton).
+    Search runs server-side on Qdrant."""
+    global _vectorstore_instance
+    if _vectorstore_instance is not None:
+        return _vectorstore_instance
+
     _ensure_collection()
     sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
     
-    # 1. Setup LocalFileStore for embeddings cache
+    # Setup LocalFileStore for embeddings cache
     store = LocalFileStore("data/embedding_cache")
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
         embeddings, store, namespace=settings.EMBEDDING_MODEL_NAME
     )
     
-    return QdrantVectorStore(
+    _vectorstore_instance = QdrantVectorStore(
         collection_name=settings.QDRANT_COLLECTION,
         embedding=cached_embeddings,
         sparse_embedding=sparse_embeddings,
@@ -99,6 +106,7 @@ def get_vectorstore() -> QdrantVectorStore:
         retrieval_mode=RetrievalMode.HYBRID,
         client=qdrant_client,
     )
+    return _vectorstore_instance
 
 
 def get_retriever(k: int = 3):

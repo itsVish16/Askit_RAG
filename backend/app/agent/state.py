@@ -16,3 +16,5 @@ class GraphState(TypedDict, total=False):
     # Short-term conversation memory. add_messages appends (not overwrites)
     # so prior turns survive across /ask calls in the same thread_id.
     chat_history: Annotated[list[BaseMessage], add_messages]
+    # ReAct agent internal message sequence (Thought, Action ToolCall, Observation ToolMessage)
+    messages: Annotated[list[BaseMessage], add_messages]

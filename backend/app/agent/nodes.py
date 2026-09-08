@@ -6,11 +6,11 @@ Always retrieves documents for the query concurrently, then generates an answer 
 
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel, Field
 
 from app.agent.state import GraphState
-from app.agent.tools import retrieve_docs_async
+from app.agent.tools import retrieve_docs_async, retrieve_documents
 from app.config import settings
 from app.core.llm import llm, router_llm
 from app.core.logger import get_logger
@@ -136,42 +136,98 @@ async def chitchat_node(state: GraphState) -> dict:
         "num_candidates": 0,
     }
 
-async def rag_agent_node(state: GraphState) -> dict:
-    """Retrieves context and generates an answer in a single step."""
+_REACT_SYSTEM_PROMPT = (
+    "You are a helpful research assistant operating with a ReAct (Reasoning and Acting) workflow.\n"
+    "You have access to the `retrieve_documents` tool to search the user's uploaded documents.\n\n"
+    "Guidelines:\n"
+    "1. When the user's question requires facts, document excerpts, or specific information from their files, "
+    "invoke `retrieve_documents` with a targeted search query.\n"
+    "2. Once you observe the retrieved document chunks, synthesize a direct, well-grounded response citing relevant details.\n"
+    "3. If the retrieved context is insufficient or irrelevant, state clearly that the uploaded documents do not contain the answer. "
+    "Do not invent or extrapolate facts.\n"
+    "4. If no external documents are needed (e.g. conversational greetings or questions about the immediate conversation), answer directly."
+)
+
+
+async def rag_reasoning_node(state: GraphState) -> dict:
+    """ReAct agent reasoning step: evaluates conversation history and tool observations to decide action or answer."""
     question = state["question"]
     history = state.get("chat_history", []) or []
+    current_messages = state.get("messages", []) or []
+
+    if not current_messages:
+        working_messages = [SystemMessage(content=_REACT_SYSTEM_PROMPT)]
+        working_messages.extend(history[-6:])
+        working_messages.append(HumanMessage(content=question))
+    else:
+        working_messages = list(current_messages)
+
+    llm_with_tools = llm.bind_tools([retrieve_documents]).with_config({"run_name": "final_generation"})
+    response = await llm_with_tools.ainvoke(working_messages)
+
+    update = {"messages": [response]}
+    if not (hasattr(response, "tool_calls") and response.tool_calls):
+        # Final answer produced (no further tool actions needed)
+        answer = response.content or ""
+        update["answer"] = answer
+        update["chat_history"] = [
+            HumanMessage(content=question),
+            AIMessage(content=answer),
+        ]
+    return update
+
+
+async def execute_tools_node(state: GraphState) -> dict:
+    """ReAct Action step: executes the retrieve_documents tool calls and returns observations."""
+    last_msg = state["messages"][-1]
+    tool_messages = []
+    accumulated_context = list(state.get("context", []) or [])
+    accumulated_queries = list(state.get("queries", []) or [])
+    accumulated_keywords = list(state.get("keywords", []) or [])
     user_id = state.get("user_id")
 
-    # Fetch context concurrently
-    context_text, queries, keywords, chunks = await retrieve_docs_async(question, user_id)
-    
-    # Store discrete context chunks for the UI response
-    raw_contexts = chunks if chunks else []
-
-    # Build prompt
-    augmented_question = (
-        f"Context:\n{context_text}\n\n"
-        f"Question: {question}"
-    )
-
-    messages = [SystemMessage(content=_SYSTEM_PROMPT)]
-    messages.extend(history)
-    messages.append(HumanMessage(content=augmented_question))
-
-    # Single async LLM generation
-    response = await llm.with_config({"run_name": "final_generation"}).ainvoke(messages)
-    answer = response.content
-
-    persisted = [
-        HumanMessage(content=question),
-        AIMessage(content=answer),
-    ]
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        for tc in last_msg.tool_calls:
+            if tc.get("name") == "retrieve_documents":
+                q = tc.get("args", {}).get("query", state["question"])
+                context_text, queries, keywords, chunks = await retrieve_docs_async(q, user_id)
+                tool_messages.append(
+                    ToolMessage(
+                        content=context_text,
+                        name=tc["name"],
+                        tool_call_id=tc["id"],
+                    )
+                )
+                for chunk in chunks:
+                    if chunk not in accumulated_context:
+                        accumulated_context.append(chunk)
+                for query in queries:
+                    if query not in accumulated_queries:
+                        accumulated_queries.append(query)
+                for kw in keywords:
+                    if kw not in accumulated_keywords:
+                        accumulated_keywords.append(kw)
 
     return {
-        "answer": answer,
-        "chat_history": persisted,
-        "context": raw_contexts,
-        "queries": queries,
-        "keywords": keywords,
-        "num_candidates": len(raw_contexts),
+        "messages": tool_messages,
+        "context": accumulated_context,
+        "queries": accumulated_queries,
+        "keywords": accumulated_keywords,
+        "num_candidates": len(accumulated_context),
     }
+
+
+def should_continue_rag(state: GraphState) -> str:
+    """Checks if the ReAct agent requested tool execution or reached the final answer."""
+    messages = state.get("messages", [])
+    if not messages:
+        return "end"
+    last_msg = messages[-1]
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        return "tools"
+    return "end"
+
+
+# Backwards-compatibility alias
+rag_agent_node = rag_reasoning_node
+

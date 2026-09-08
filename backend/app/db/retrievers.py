@@ -27,6 +27,7 @@ class FireworksReranker:
         self.api_key = api_key
         self.url = url
         self.model = model
+        self._client = httpx.Client(timeout=15.0)
 
     def rerank(self, query: str, texts: list[str], top_n: int = 5) -> list[str]:
         if not texts:
@@ -49,14 +50,13 @@ class FireworksReranker:
         }
 
         try:
-            with httpx.Client(timeout=15.0) as client:
-                response = client.post(self.url, headers=headers, json=payload)
-                if response.status_code != 200:
-                    logger.warning(
-                        f"[reranker] Fireworks API returned HTTP {response.status_code}: {response.text} — "
-                        "falling back to original order."
-                    )
-                    return texts[:top_n]
+            response = self._client.post(self.url, headers=headers, json=payload)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[reranker] Fireworks API returned HTTP {response.status_code}: {response.text} — "
+                    "falling back to original order."
+                )
+                return texts[:top_n]
 
                 data = response.json()
                 results = data.get("data") or data.get("results") or []
@@ -336,8 +336,14 @@ async def retrieve_candidates(
     else:
         bm25_docs = []
         
-    unique = {doc.page_content for doc in list(dense_docs) + list(bm25_docs)}
-    return list(unique)
+    ordered_candidates: list[str] = []
+    seen = set()
+    for doc in list(dense_docs) + list(bm25_docs):
+        content = doc.page_content.strip() if hasattr(doc, "page_content") else str(doc).strip()
+        if content and content not in seen:
+            seen.add(content)
+            ordered_candidates.append(content)
+    return ordered_candidates
 
 
 def rerank_texts(query: str, texts: list[str], k_final: int = 5) -> list[str]:

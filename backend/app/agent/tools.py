@@ -1,13 +1,18 @@
-"""Async document retrieval tools."""
-
 import asyncio
 
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.core.llm import llm
 from app.core.prompts import SEARCH_EXPANSION_PROMPT
 from app.db.retrievers import bm25_candidates_from_keywords, rerank_texts, retrieve_candidates
+
+
+@tool
+def retrieve_documents(query: str) -> str:
+    """Search the user's uploaded documents for passages and facts relevant to the query."""
+    return query
 
 
 class SearchExpansion(BaseModel):
@@ -53,16 +58,21 @@ async def retrieve_docs_async(query: str, user_id: str | None) -> tuple[str, lis
         
     results = await asyncio.gather(*tasks)
     
-    # 4. Deduplicate
-    pool = set()
+    # 4. Deduplicate while preserving rank order from dense & BM25 retrieval
+    seen = set()
+    ordered_pool: list[str] = []
     for res in results:
         for chunk in res:
-            pool.add(chunk)
+            c = chunk.strip() if isinstance(chunk, str) else str(chunk).strip()
+            if c and c not in seen:
+                seen.add(c)
+                ordered_pool.append(c)
             
-    pool_list = list(pool)
+    # Cap candidate pool to top 20 before cloud reranking (saves tokens & latency)
+    candidates_to_rerank = ordered_pool[:20]
     
     # 5. Rerank
-    reranked = await asyncio.to_thread(rerank_texts, query, pool_list, settings.K_FINAL)
+    reranked = await asyncio.to_thread(rerank_texts, query, candidates_to_rerank, settings.K_FINAL)
     
     if not reranked:
         return "No relevant documents found.", all_queries, keywords, []
