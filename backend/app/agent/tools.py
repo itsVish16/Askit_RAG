@@ -5,8 +5,11 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.core.llm import llm
+from app.core.logger import get_logger
 from app.core.prompts import SEARCH_EXPANSION_PROMPT
 from app.db.retrievers import bm25_candidates_from_keywords, rerank_texts, retrieve_candidates
+
+logger = get_logger(__name__)
 
 
 @tool
@@ -22,10 +25,15 @@ class SearchExpansion(BaseModel):
 
 async def generate_search_expansion(query: str) -> SearchExpansion:
     """Uses the LLM to analyze query complexity, generate keywords, and optionally generate multi-query variants in one call."""
-    res = await llm.with_structured_output(SearchExpansion).with_config(tags=["internal_tool"]).ainvoke(
-        SEARCH_EXPANSION_PROMPT.format_messages(question=query)
-    )
-    return res
+    try:
+        res = await llm.with_structured_output(SearchExpansion).with_config(tags=["internal_tool"]).ainvoke(
+            SEARCH_EXPANSION_PROMPT.format_messages(question=query)
+        )
+        return res
+    except Exception as exc:
+        logger.warning(f"[search_expansion] structured call failed: {exc} — falling back to single-query baseline")
+        clean_words = [w.strip() for w in query.split() if len(w.strip()) > 3]
+        return SearchExpansion(is_complex=False, keywords=clean_words[:6], variants=[])
 
 async def retrieve_docs_async(query: str, user_id: str | None) -> tuple[str, list[str], list[str], list[str]]:
     """Search the user's uploaded documents for relevant information concurrently."""
