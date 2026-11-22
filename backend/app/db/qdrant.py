@@ -1,3 +1,7 @@
+import threading
+
+from langchain_classic.embeddings import CacheBackedEmbeddings
+from langchain_classic.storage import LocalFileStore
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import AsyncQdrantClient, QdrantClient, models
 from qdrant_client.models import (
@@ -27,14 +31,12 @@ async_qdrant_client = AsyncQdrantClient(
     timeout=settings.QDRANT_TIMEOUT,
 )
 
-# Caches that the metadata.user_id keyword payload index exists, so we don't
-# issue create_payload_index on every request.
+_init_lock = threading.Lock()
 _user_id_index_ensured: bool = False
+_vectorstore: QdrantVectorStore | None = None
 
 
 def _ensure_collection() -> None:
-    """Create the collection if absent. Vector size is probed from the
-    configured embedding model (no hardcoded dim). COSINE for semantic text."""
     existing = {c.name for c in qdrant_client.get_collections().collections}
     if settings.QDRANT_COLLECTION not in existing:
         vector_size = len(embeddings.embed_query("probe"))
@@ -52,9 +54,6 @@ def _ensure_collection() -> None:
 
 
 def _ensure_user_id_index() -> None:
-    """Create a keyword payload index on metadata.user_id if absent. Qdrant
-    refuses filtered scroll/search on an unindexed field; per-user PDF scoping
-    depends on this filter, so we create it eagerly and cache the success."""
     global _user_id_index_ensured
     if _user_id_index_ensured:
         return
@@ -66,37 +65,34 @@ def _ensure_user_id_index() -> None:
         )
         logger.info("Ensured payload index on metadata.user_id (keyword).")
     except Exception as exc:
-        # 409 = already exists, fine; anything else just log so a transient
-        # startup issue doesn't crash the app.
         if "already exists" not in str(exc) and "409" not in str(exc):
             logger.warning(f"Skipping user_id index creation: {exc}")
     _user_id_index_ensured = True
 
 
-from langchain_classic.embeddings import CacheBackedEmbeddings
-from langchain_classic.storage import LocalFileStore
-
-
 def get_vectorstore() -> QdrantVectorStore:
-    """Wrap the Qdrant collection as a LangChain VectorStore (creates the
-    collection first if needed). Search runs server-side on Qdrant."""
-    _ensure_collection()
-    sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
-    
-    # 1. Setup LocalFileStore for embeddings cache
-    store = LocalFileStore("data/embedding_cache")
-    cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
-        embeddings, store, namespace=settings.EMBEDDING_MODEL_NAME
-    )
-    
-    return QdrantVectorStore(
-        collection_name=settings.QDRANT_COLLECTION,
-        embedding=cached_embeddings,
-        sparse_embedding=sparse_embeddings,
-        sparse_vector_name="sparse",
-        retrieval_mode=RetrievalMode.HYBRID,
-        client=qdrant_client,
-    )
+    """Return a cached QdrantVectorStore singleton (initialized once)."""
+    global _vectorstore
+    if _vectorstore is not None:
+        return _vectorstore
+    with _init_lock:
+        if _vectorstore is not None:
+            return _vectorstore
+        _ensure_collection()
+        sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
+        store = LocalFileStore("data/embedding_cache")
+        cached_embeddings = CacheBackedEmbeddings.from_bytes_store(
+            embeddings, store, namespace=settings.EMBEDDING_MODEL_NAME
+        )
+        _vectorstore = QdrantVectorStore(
+            collection_name=settings.QDRANT_COLLECTION,
+            embedding=cached_embeddings,
+            sparse_embedding=sparse_embeddings,
+            sparse_vector_name="sparse",
+            retrieval_mode=RetrievalMode.HYBRID,
+            client=qdrant_client,
+        )
+        return _vectorstore
 
 
 def get_retriever(k: int = 3):
@@ -104,18 +100,12 @@ def get_retriever(k: int = 3):
 
 
 def user_scope_filter(user_id: str | None) -> Filter | None:
-    """Qdrant payload filter restricting retrieval to one user's documents.
-    None when there's no scope (= retrieve over the whole shared corpus).
-    Key is metadata.user_id because langchain-qdrant stores Document metadata
-    under that payload path."""
     if not user_id:
         return None
     return Filter(must=[FieldCondition(key="metadata.user_id", match=MatchValue(value=user_id))])
 
 
 def get_filtered_retriever(k: int, user_id: str):
-    """Scoped dense retriever — used by /ask when a user_id is supplied so the
-    LLM grounds only on chunks that user uploaded, never the shared corpus."""
     return get_vectorstore().as_retriever(
         search_kwargs={"k": k, "filter": user_scope_filter(user_id)}
     )

@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -30,8 +31,9 @@ class AuthOut(BaseModel):
 async def register(body: RegisterIn):
     if get_user_by_email(body.email) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered.")
+    pw_hash = await asyncio.to_thread(hash_password, body.password)
     try:
-        user = create_user(body.name, body.email, hash_password(body.password))
+        user = create_user(body.name, body.email, pw_hash)
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered.")
     return AuthOut(
@@ -43,7 +45,8 @@ async def register(body: RegisterIn):
 @router.post("/login", response_model=AuthOut)
 async def login(body: LoginIn):
     user = get_user_by_email(body.email)
-    if user is None or not verify_password(body.password, user["password_hash"]):
+    valid = user is not None and await asyncio.to_thread(verify_password, body.password, user["password_hash"])
+    if not valid:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
     return AuthOut(token=create_jwt(user["id"]), user=UserPublic(**user))
 

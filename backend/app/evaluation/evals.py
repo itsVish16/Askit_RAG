@@ -1,10 +1,9 @@
-"""LLM-as-a-Judge evaluation harness (Opik).
+"""Opik LLM-as-a-Judge evaluation harness for COVID-QA."""
 
-Scores the agent against the COVID-QA test split on Hallucination,
-AnswerRelevance, ContextRecall, ContextPrecision. The judge is our Fireworks
-model (not OpenAI). GEval was rejected: it needs top_logprobs=20, Fireworks
-caps at 5.
-"""
+import asyncio
+import os
+import uuid
+
 import pandas as pd
 from opik.evaluation import evaluate
 from opik.evaluation.metrics import (
@@ -21,107 +20,95 @@ from app.db.retrievers import get_bm25_retriever, get_reranker
 
 logger = get_logger(__name__)
 
-# Each item carries its ground-truth answer so Opik scores against the real
-# answer, not just plausibility.
-df = pd.read_parquet(settings.EVAL_PARQUET_PATH).head(settings.EVAL_SAMPLE_SIZE)
-test_dataset = [
-    {"input": row["question"], "expected_output": row["response"]}
-    for _, row in df.iterrows()
-]
+
+def _load_test_dataset() -> list[dict]:
+    if not os.path.exists(settings.EVAL_PARQUET_PATH):
+        raise FileNotFoundError(f"Eval parquet not found: {settings.EVAL_PARQUET_PATH}")
+    df = pd.read_parquet(settings.EVAL_PARQUET_PATH).head(settings.EVAL_SAMPLE_SIZE)
+    return [
+        {"input": row["question"], "expected_output": row["response"]}
+        for _, row in df.iterrows()
+    ]
 
 
-import asyncio
-import uuid
-
-
-def my_rag_task(dataset_item: dict):
+def my_rag_task(dataset_item: dict) -> dict:
     question = dataset_item["input"]
-    logger.info(f"\nEvaluating Question: {question}")
+    logger.info(f"[evals] Evaluating: {question}")
     thread_id = str(uuid.uuid4())
     final_state = asyncio.run(
         app_agent.ainvoke(
-            {"question": question},
+            {"question": question, "corpus_scope": "shared"},
             config={"configurable": {"thread_id": thread_id}},
         )
     )
-    return {"output": final_state.get("answer", ""), "context": final_state.get("context", [])}
+    return {
+        "output": final_state.get("answer", ""),
+        "context": final_state.get("context", []),
+    }
 
 
 def run_eval_pipeline_if_needed() -> None:
-    from app.evaluation.results import latest_eval_results
+    from app.evaluation.results import latest_eval_results, save_eval_results
 
     if latest_eval_results() is not None:
-        logger.info("[evals] Eval results already cached in database. Skipping automated evals.")
+        logger.info("[evals] Eval results already cached. Skipping.")
         return
 
-    logger.info("Starting Automated Evals...")
+    if not os.path.exists(settings.EVAL_PARQUET_PATH):
+        logger.warning(f"[evals] Skipping automated evals — parquet not found at {settings.EVAL_PARQUET_PATH}.")
+        return
+
+    test_dataset = _load_test_dataset()
+    logger.info(f"[evals] Starting evaluation on {len(test_dataset)} questions...")
+
     from opik import Opik
     from opik.evaluation.models import LiteLLMChatModel
 
     client = Opik()
     dataset = client.get_or_create_dataset(name=settings.EVAL_DATASET_NAME)
-    dataset.clear()  # one dataset per experiment — runs never contaminate each other
+    dataset.clear()
     dataset.insert(test_dataset)
 
+    judge_model_name = settings.EVAL_JUDGE_MODEL or f"fireworks_ai/{settings.FIREWORKS_MODEL_NAME}"
     custom_judge = LiteLLMChatModel(
-        model_name=f"fireworks_ai/{settings.FIREWORKS_MODEL_NAME}",
+        model_name=judge_model_name,
         api_key=settings.FIREWORKS_API_KEY,
     )
 
-    hallucination_metric = Hallucination(model=custom_judge)
-    relevance_metric = AnswerRelevance(model=custom_judge)
-    context_recall = ContextRecall(model=custom_judge)
-    context_precision = ContextPrecision(model=custom_judge)
+    metrics_list = [
+        Hallucination(model=custom_judge),
+        AnswerRelevance(model=custom_judge),
+        ContextRecall(model=custom_judge),
+        ContextPrecision(model=custom_judge),
+    ]
 
-    # Warmup: materialize heavy resources in THIS (main) process BEFORE
-    # evaluate() forks parallel workers. Children inherit via fork(), so BM25
-    # + reranker load ONCE here instead of once per worker (~4GB vs ~12GB).
-    import asyncio
-
-    logger.info("Warming up BM25 index + reranker in main process...")
-    # Using a new event loop for synchronous execution in the background thread
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.ensure_future(get_bm25_retriever(k=settings.K_RETRIEVE))
-        else:
-            loop.run_until_complete(get_bm25_retriever(k=settings.K_RETRIEVE))
-    except RuntimeError:
         asyncio.run(get_bm25_retriever(k=settings.K_RETRIEVE))
-
-    try:
         get_reranker()
     except Exception as exc:
-        logger.error(f"Warmup failed: {exc}")
-    logger.info("Warmup done.")
+        logger.warning(f"[evals] Warmup warning: {exc}")
 
     experiment = evaluate(
         dataset=dataset,
         task=my_rag_task,
-        scoring_metrics=[hallucination_metric, relevance_metric, context_recall, context_precision],
+        scoring_metrics=metrics_list,
     )
 
-    # Persist the per-metric averages so the frontend can display cached
-    # results without re-running the (paid) eval. Opik's evaluate() returns an
-    # experiment whose summary exposes metric averages.
     metrics: dict[str, float] = {}
     try:
         summary = experiment.summary()
-        # summary() returns a dataframe-like object with a 'average_score' per metric.
         for row in summary:
             name = row.get("name") or row.get("metric") or row.get("metric_name")
             score = row.get("average_score")
             if name is not None and score is not None:
                 metrics[str(name)] = float(score)
     except Exception as exc:
-        logger.warning(f"[evals] could not extract metric summary: {exc}")
+        logger.warning(f"[evals] Could not extract metric summary: {exc}")
 
     if metrics:
-        from app.evaluation.results import save_eval_results
-
         save_eval_results(metrics)
-        logger.info(f"  [evals] cached metrics: {metrics}")
-    logger.info("Evals complete! Check your Opik Dashboard.")
+        logger.info(f"[evals] Cached metrics: {metrics}")
+
 
 if __name__ == "__main__":
     run_eval_pipeline_if_needed()
