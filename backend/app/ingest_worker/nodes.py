@@ -1,11 +1,6 @@
-"""Nodes for the ingest worker LangGraph.
+"""LangGraph nodes for the async document ingestion worker."""
 
-`error_type` is the contract between nodes and conditional edges: a node sets
-it to "permanent" (poison-pill, delete SQS msg) or "transient" (let SQS
-visibility-timeout redeliver). No LLM calls here, so the only observability is
-the Opik span the runner wraps around the graph.
-"""
-
+import hashlib
 import os
 from typing import TypedDict
 
@@ -18,7 +13,7 @@ from app.queue import status
 
 class WorkerGraphState(TypedDict, total=False):
     job_id: str
-    file_path: str  # local path, or s3://bucket/key for S3-backed jobs
+    file_path: str
     user_id: str
     sha256: str
     attempts: int
@@ -28,8 +23,8 @@ class WorkerGraphState(TypedDict, total=False):
     num_chunks: int
     error_type: str | None
     last_error: str | None
-    final_state: str  # COMPLETED | FAILED | RETRYING
-    _s3_temp: str | None  # temp file path for S3-downloaded content; cleaned up in mark_done
+    final_state: str
+    _s3_temp: str | None
 
 
 def _is_s3_path(path: str) -> bool:
@@ -37,18 +32,22 @@ def _is_s3_path(path: str) -> bool:
 
 
 def _parse_s3_path(path: str) -> str | None:
-    """Extract the S3 key from s3://bucket/key. Returns None on malformed path."""
     if not path.startswith("s3://"):
         return None
-    # s3://bucket/key -> key
     parts = path.split("/", 3)
     return parts[3] if len(parts) >= 4 else None
 
 
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(65536), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 def fetch_file_node(state: WorkerGraphState):
-    """Verify the file exists. When file_path is an s3:// URL, download from
-    S3 to a temp file and override file_path. Treats missing S3 object as
-    permanent (won't resolve by retrying)."""
+    """Verify local file or download S3 object to a temp file and ensure SHA-256."""
     fp = state["file_path"]
 
     if _is_s3_path(fp):
@@ -59,10 +58,13 @@ def fetch_file_node(state: WorkerGraphState):
             temp = s3_queue.download_to_temp(s3_key)
         except Exception as exc:
             return {"error_type": "permanent", "last_error": f"S3 download failed: {exc}"}
-        return {"file_path": temp, "_s3_temp": temp}
+        sha = state.get("sha256") or _sha256_file(temp)
+        return {"file_path": temp, "_s3_temp": temp, "sha256": sha}
 
     if not os.path.exists(fp):
         return {"error_type": "permanent", "last_error": f"file not found: {fp}"}
+    if not state.get("sha256"):
+        return {"sha256": _sha256_file(fp)}
     return {}
 
 
@@ -76,7 +78,10 @@ def extract_pdf_node(state: WorkerGraphState):
     if not pages:
         return {"error_type": "permanent", "last_error": "no extractable pages"}
     if len(pages) > settings.MAX_PDF_PAGES:
-        return {"error_type": "permanent", "last_error": f"too many pages ({len(pages)} > {settings.MAX_PDF_PAGES})"}
+        return {
+            "error_type": "permanent",
+            "last_error": f"too many pages ({len(pages)} > {settings.MAX_PDF_PAGES})",
+        }
     return {"pages": pages, "num_pages": len(pages)}
 
 
@@ -104,10 +109,11 @@ def embed_upsert_node(state: WorkerGraphState):
 
 
 def mark_done_node(state: WorkerGraphState):
-    """Terminal: write the sqlite row + free RAM + clean up S3 temp file."""
+    """Persist terminal status, release memory, and remove any S3 temp file."""
     et = state.get("error_type")
     job_id = state["job_id"]
     attempts = state.get("attempts", 0)
+
     if et == "permanent":
         status.set_state(job_id, "FAILED", attempts=attempts, error=state.get("last_error"))
         final = "FAILED"
@@ -123,7 +129,6 @@ def mark_done_node(state: WorkerGraphState):
             except OSError:
                 pass
 
-    # Clean up S3 temp file if one was downloaded.
     s3_temp = state.get("_s3_temp")
     if s3_temp:
         try:

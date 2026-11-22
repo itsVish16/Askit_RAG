@@ -7,28 +7,29 @@ import boto3
 from botocore.exceptions import ClientError
 
 from app.config import settings
+from app.core.logger import get_logger
 
-# Boto3 clients aren't strictly thread-safe by construction but reuse fine
-# across threads in practice. One client, lazily built under a lock.
+logger = get_logger(__name__)
+
 _client = None
 _client_lock = threading.Lock()
 _client_initialized = False
 
 
 def _get_sqs_region() -> str:
-    """Infer region from SQS_QUEUE_URL or fallback to AWS_REGION."""
-    if settings.SQS_QUEUE_URL and "sqs." in settings.SQS_QUEUE_URL and ".amazonaws.com" in settings.SQS_QUEUE_URL:
+    """Infer AWS region from SQS_QUEUE_URL or fall back to AWS_REGION."""
+    url = settings.SQS_QUEUE_URL
+    if url and "sqs." in url and ".amazonaws.com" in url:
         try:
-            domain = settings.SQS_QUEUE_URL.split("sqs.", 1)[1].split(".amazonaws.com", 1)[0]
+            domain = url.split("sqs.", 1)[1].split(".amazonaws.com", 1)[0]
             if domain:
                 return domain
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"[sqs] failed to parse region from SQS_QUEUE_URL: {exc}")
     return settings.AWS_REGION
 
 
 def _sqs():
-    """Lazily build the SQS client."""
     global _client, _client_initialized
     if _client_initialized:
         return _client
@@ -47,28 +48,28 @@ def _sqs():
 
 
 def is_configured() -> bool:
-    """True iff we have a queue URL we can publish to."""
     return bool(settings.SQS_QUEUE_URL)
 
 
 def send_job(job_id: str, file_path: str, user_id: str, sha256: str, attempts: int = 0) -> str:
-    """Publish one ingest job."""
     body = json.dumps(
-        {"job_id": job_id, "file_path": file_path, "user_id": user_id, "sha256": sha256, "attempts": attempts}
+        {
+            "job_id": job_id,
+            "file_path": file_path,
+            "user_id": user_id,
+            "sha256": sha256,
+            "attempts": attempts,
+        }
     )
     try:
-        resp = _sqs().send_message(
-            QueueUrl=settings.SQS_QUEUE_URL,
-            MessageBody=body,
-        )
+        resp = _sqs().send_message(QueueUrl=settings.SQS_QUEUE_URL, MessageBody=body)
         return resp.get("MessageId", "")
     except ClientError as exc:
-        print(f"  [sqs] send_job failed: {exc}")
+        logger.error(f"[sqs] send_job failed: {exc}")
         raise
 
 
 def receive_one():
-    """Long-poll for a single ingest message."""
     try:
         resp = _sqs().receive_message(
             QueueUrl=settings.SQS_QUEUE_URL,
@@ -78,7 +79,7 @@ def receive_one():
             AttributeNames=["ApproximateReceiveCount"],
         )
     except ClientError as exc:
-        print(f"  [sqs] receive_one failed: {exc}")
+        logger.error(f"[sqs] receive_one failed: {exc}")
         return None
 
     msgs = resp.get("Messages") or []
@@ -88,7 +89,6 @@ def receive_one():
     try:
         decoded = json.loads(m.get("Body", "{}"))
     except json.JSONDecodeError:
-        # Garbage a client published — delete so we don't burn visibility cycles.
         delete_message(m["ReceiptHandle"])
         return None
     decoded["receipt_handle"] = m["ReceiptHandle"]
@@ -97,8 +97,7 @@ def receive_one():
 
 
 def delete_message(receipt_handle: str) -> None:
-    """ACK — delete a message when done with the job."""
     try:
         _sqs().delete_message(QueueUrl=settings.SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
     except ClientError as exc:
-        print(f"  [sqs] delete_message failed: {exc}")
+        logger.error(f"[sqs] delete_message failed: {exc}")

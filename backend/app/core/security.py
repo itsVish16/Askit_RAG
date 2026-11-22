@@ -1,4 +1,6 @@
-"""Password hashing (bcrypt) + JWT issue/verify."""
+"""Password hashing (bcrypt) and JWT issue/verification."""
+
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
@@ -24,17 +26,27 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_jwt(user_id: str) -> str:
-    payload = {"sub": user_id}
+def create_jwt(user_id: str, expires_hours: int | None = None) -> str:
+    now = datetime.now(UTC)
+    ttl = settings.JWT_EXPIRE_HOURS if expires_hours is None else expires_hours
+    payload = {
+        "sub": user_id,
+        "iat": now,
+        "exp": now + timedelta(hours=ttl),
+    }
     token = jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALG)
-    # PyJWT >=2 returns str; older versions return bytes — normalize.
     return token if isinstance(token, str) else token.decode()
 
 
 def decode_jwt(token: str) -> str | None:
-    """Return user_id (`sub`) if valid, else None."""
+    """Return user_id (`sub`) if valid and unexpired, else None."""
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALG])
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALG],
+            options={"require": ["exp", "sub"]},
+        )
         return payload.get("sub")
     except jwt.PyJWTError:
         return None

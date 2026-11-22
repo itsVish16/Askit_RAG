@@ -1,142 +1,73 @@
 <p align="center">
-  <img src="docs/assets/Askit_logo.png" alt="Askit Logo" width="300" />
+  <img src="docs/assets/Askit_logo.png" alt="Askit Logo" width="260" />
 </p>
 
-# Askit RAG 🚀
+# Askit RAG
 
-A production-grade, highly optimized biomedical RAG built over the **RAGBench COVID-QA** corpus. Askit RAG features a stunning, glassmorphism UI designed for modern luxury and empowers users to chat with their uploaded biomedical documents. 
+Biomedical document Q&A system built with FastAPI, LangGraph, Qdrant Cloud, Fireworks AI, and Next.js 15, evaluated on the RAGBench COVID-QA benchmark with Opik.
 
-### Why Askit?
-- **Unparalleled Retrieval Accuracy**: The system leverages a multi-stage hybrid search combining dense retrieval (Qdrant + `bge-large`), sparse lexical retrieval (BM25 + keyword extraction), and precise cross-encoder reranking. This architecture achieves exceptional context recall (0.587) and answer relevance (0.844) on domain-specific datasets.
-- **Deep Observability**: Fully integrated with [Opik](https://www.comet.com/docs/opik/), Askit RAG traces every LLM generation, retrieval query, and multi-step agent action. Performance is incrementally validated and monitored.
-- **Async Ingestion**: Powerful background workers process and chunk documents securely without blocking the main event loop.
+## Architecture
 
-## 🏗 Architecture
+- **Query Pipeline (`backend/app/agent/`):** LangGraph router (`chitchat` / `history` / `rag`) with structured query expansion, hybrid retrieval (Qdrant dense + sparse + BM25), Fireworks cloud reranking (`qwen3-reranker-8b`), and SSE streaming.
+- **Ingestion Pipeline (`backend/app/ingest_worker/`):** Async LangGraph worker consuming AWS SQS (or direct local fallback) with PyMuPDF text extraction, Fireworks Vision OCR fallback for scanned pages, deterministic UUID chunk upserts, and per-user `metadata.user_id` isolation.
+- **Persistence & Security:** SQLite (`users`, `chat`, `ingest_jobs`, `eval`) with bcrypt password hashing, expiring HS256 JWTs, per-user rate limiting, and regex PII redaction.
+- **Observability & Evals (`backend/app/evaluation/`):** Opik tracing across LLM calls and automated COVID-QA evaluation (`Hallucination`, `AnswerRelevance`, `ContextRecall`, `ContextPrecision`).
 
-Askit utilizes a multi-stage retrieval architecture designed for both high recall and high precision.
+## Tech Stack
 
-```mermaid
-flowchart TD
-    Q[User Question] --> MQ[Multi-Query Expansion<br/><i>LLM rewrites 1 question into N=4 variants</i>]
-    Q --> KW[Keyword Extraction<br/><i>Extracts entities & synonyms for lexical search</i>]
-    
-    MQ --> RET[Retrieval Stage]
-    KW --> RET
-    
-    RET --> |Dense: Qdrant + bge-large| DEDUP[Deduped Candidate Pool]
-    RET --> |Sparse: BM25| DEDUP
-    
-    DEDUP --> RERANK[Cross-Encoder Reranker<br/><i>Scores and selects top-5 chunks</i>]
-    RERANK --> GEN[Generation<br/><i>Grounded answer generated over retrieved chunks</i>]
-    
-    GEN --> A[Final Answer]
+- **Backend:** Python 3.12 (`uv`), FastAPI, LangGraph, Qdrant Cloud, Fireworks AI (LLM, Vision, Embeddings, Reranker), Opik
+- **Frontend:** Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS
+- **Queue / Storage:** AWS SQS & S3 (optional; falls back to local disk + threadpool)
+
+## Quick Start
+
+### 1. Configure Environment
+
+```bash
+git clone https://github.com/itsVish16/Askit_RAG.git
+cd Askit_RAG
+
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env.local
 ```
 
-### The Retrieval Stack in Detail:
-1. **Multi-Query Expansion (Recall Engine):** Expands the user's query into 4 domain-aware variants.
-2. **Keyword Extraction (Precision Engine):** Identifies exact entities (like "SARS-CoV-2") to feed directly into BM25.
-3. **Hybrid Search:** Combines dense retrieval (`Qdrant` with `bge-large`) and sparse lexical retrieval (`BM25`).
-4. **Reranking:** Uses an on-device `cross-encoder/ms-marco-MiniLM-L6-v2` to definitively score the retrieved chunks.
+Set the required variables in `backend/.env`:
+- `FIREWORKS_API_KEY`, `FIREWORKS_BASE_URL`, `FIREWORKS_MODEL_NAME`
+- `QDRANT_URL`, `QDRANT_API_KEY`
+- `OPIK_API_KEY`, `OPIK_WORKSPACE`, `OPIK_PROJECT_NAME`
+- `JWT_SECRET`
 
-Every stage was validated with a dedicated Opik experiment on a 50-question test split:
+### 2. Run with Docker Compose
 
-| Change | ContextRecall | ContextPrecision | AnswerRelevance | Hallucination |
+```bash
+docker-compose up --build
+```
+
+- **Backend API:** `http://localhost:8000`
+- **Frontend UI:** `http://localhost:3000`
+
+### 3. Local Development & Tests
+
+```bash
+cd backend
+uv sync --frozen --python 3.12
+uv run uvicorn app.main:app --reload --port 8000
+
+# Run unit tests
+uv run pytest -q
+```
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+## Evaluation Results (RAGBench COVID-QA, 50-question split)
+
+| Stage | ContextRecall | ContextPrecision | AnswerRelevance | Hallucination |
 |---|---|---|---|---|
 | BM25 baseline | 0.354 | — | 0.659 | — |
 | + Dense embeddings | 0.500 | — | 0.829 | — |
 | + Reranker | 0.517 | — | 0.859 | — |
 | + Keyword BM25 extraction | **0.587** | **0.544** | **0.844** | **0.085** |
-
----
-
-## 🛠 Tech Stack
-
-- **Serving**: FastAPI + LangGraph (async, highly parallel)
-- **Vector Store**: Qdrant Cloud (cosine similarity)
-- **Embeddings**: Fireworks API (`nomic-ai/nomic-embed-text-v1`)
-- **Lexical Search**: `rank-bm25` (cached locally)
-- **Reranker**: `cross-encoder/ms-marco-MiniLM-L6-v2` (on-device via sentence-transformers)
-- **LLM**: Fireworks (OpenAI-compatible) + Vision models for OCR on scanned PDFs
-- **Asynchronous Ingestion**: Built-in Daemon thread using LangGraph (with AWS SQS fallback capability)
-- **Frontend**: Next.js 15 (App Router) + Tailwind + Framer Motion (Premium UI)
-- **Observability**: Opik (trace per request, session threading, evaluation caching)
-
----
-
-## ⚙️ How It Works
-
-### Asynchronous Ingestion & Document Processing
-Documents are uploaded to the platform (up to 5 PDFs per user, max 10 pages each). The backend processes them asynchronously:
-1. If the PDF is scanned (sparse text layer), it runs through a **Vision LLM** to recover text.
-2. The text is chunked and embedded.
-3. Chunks are upserted to Qdrant (Dense) and added to the user's localized BM25 index (Sparse).
-
-### Background Evaluation Pipeline
-Upon server startup, the backend automatically spins up a background thread that triggers the `run_eval_pipeline_if_needed()` function. This evaluates the system against the COVID-QA test dataset. 
-- Results are **cached in SQLite**. 
-- The system checks the cache before running to ensure we don't redundantly re-run expensive eval pipelines on every container restart.
-
----
-
-## 🚀 Quick Setup & Deployment
-
-The easiest way to run Askit RAG is via `docker-compose`.
-
-### 1. Configure Environment
-
-```bash
-# Clone the repository
-git clone https://github.com/your-username/askit-rag.git
-cd askit-rag
-
-# Setup backend env
-cp backend/.env.example backend/.env
-
-# Setup frontend env
-cp frontend/.env.example frontend/.env.local
-```
-
-Ensure you fill out the following keys in `backend/.env`:
-- `FIREWORKS_API_KEY`
-- `QDRANT_URL` and `QDRANT_API_KEY`
-- `OPIK_API_KEY`, `OPIK_WORKSPACE`, `OPIK_PROJECT_NAME`
-- `JWT_SECRET` (generate a random string)
-
-### 2. Deploy with Docker Compose
-
-```bash
-docker-compose up --build
-```
-This will start:
-- **Backend API:** `http://localhost:3001`
-- **Frontend UI:** `http://localhost:3000`
-
-### 3. Usage
-
-1. Open your browser to `http://localhost:3000`.
-2. Register a new account.
-3. View the **Experiment** tab to see your cached evaluation metrics.
-4. Upload documents via the **Documents** tab.
-5. Head to the **Ask** tab and start querying! Your retrieval is tightly scoped to your uploaded documents.
-
----
-
-## 📁 Project Layout
-
-```text
-├── backend/
-│   ├── app/
-│   │   ├── agent/            # LangGraph: nodes, state, compiled graph
-│   │   ├── api/              # Routers (ask, ingest, eval, auth)
-│   │   ├── core/             # LLMs, embeddings, vision, prompts
-│   │   ├── db/               # Qdrant, retrievers, loaders, users
-│   │   ├── evaluation/       # Opik eval harness + sqlite cache
-│   │   └── ingest_worker/    # Async worker LangGraph for document processing
-│   ├── Dockerfile
-│   └── .env
-├── frontend/                 # Next.js 15 UI (Premium aesthetic)
-│   ├── app/                  # Next.js routing (login, register, dashboard)
-│   ├── components/           # Reusable UI components (Sidebar, Chat, Bento)
-│   └── Dockerfile
-└── docker-compose.yml
-```

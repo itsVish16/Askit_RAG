@@ -1,8 +1,4 @@
-"""Deterministic retrieval and generation pipeline.
-
-Replaces the old ReAct loop to eliminate redundant LLM calls and reduce latency.
-Always retrieves documents for the query concurrently, then generates an answer in one LLM call.
-"""
+"""LangGraph routing and generation nodes."""
 
 from typing import Literal
 
@@ -14,57 +10,60 @@ from app.agent.tools import retrieve_docs_async
 from app.config import settings
 from app.core.llm import llm, router_llm
 from app.core.logger import get_logger
+from app.core.prompts import RAG_SYSTEM_TEXT
+from app.core.redact import redact_pii
 
 logger = get_logger(__name__)
 
-_SYSTEM_PROMPT = (
-    "You are a helpful research assistant. Answer the user's question based "
-    "on the provided document context. If the context does not contain the answer, "
-    "say you don't know. Do not invent facts."
-)
 
 class RouteDecision(BaseModel):
     route: Literal["rag", "history", "chitchat"] = Field(
         description=(
-            "Choose 'chitchat' for basic conversational greetings (e.g. 'hello', 'hi', 'thanks', 'bye'). "
-            "Choose 'history' if the user's question can be directly and accurately answered from the existing conversation history alone (e.g., repeating a previous question, asking for clarification on the previous answer, summarizing what was just discussed, or asking follow-ups about topics already covered in the chat). "
-            "Choose 'rag' if the user is asking for new information, facts, data, or documents that are NOT already answered or present in the conversation history."
+            "'chitchat' for greetings/pleasantries; "
+            "'history' if answerable solely from prior conversation turns; "
+            "'rag' if document retrieval is needed."
         )
     )
 
+
+def _maybe_redact(text: str) -> str:
+    return redact_pii(text) if settings.REDACT_PII else text
+
+
+def _build_persisted_turn(question: str, answer: str) -> list:
+    return [
+        HumanMessage(content=_maybe_redact(question)),
+        AIMessage(content=_maybe_redact(answer)),
+    ]
+
+
 async def router_node(state: GraphState) -> dict:
-    """Classifies the user query to decide whether to run full RAG, memory-assisted history answer, or fast chitchat."""
+    """Route query to 'rag', 'history', or 'chitchat'."""
     question = state["question"]
     history = state.get("chat_history", []) or []
-    
+
     if not settings.ROUTE_ENABLED:
         return {"route": "rag"}
-        
-    # Format recent history (up to last 6 turns) so router has context
-    history_summary = []
+
+    history_lines = []
     for msg in history[-6:]:
         role = "User" if isinstance(msg, HumanMessage) else "Assistant"
-        content_preview = str(msg.content)[:300]
-        history_summary.append(f"{role}: {content_preview}")
-        
-    history_context = "\n".join(history_summary) if history_summary else "None (Start of conversation)"
-    
+        history_lines.append(f"{role}: {str(msg.content)[:300]}")
+    history_context = "\n".join(history_lines) if history_lines else "None"
+
     messages = [
-        SystemMessage(content=(
-            "You are a strict routing assistant for a document Q&A assistant.\n"
-            "Analyze the user's new question in light of the prior conversation history.\n\n"
-            "Routing Rules:\n"
-            "1. 'chitchat': Basic casual greetings or pleasantries (e.g., 'hello', 'hi', 'how are you', 'thank you', 'who are you').\n"
-            "2. 'history': Use this if the user's question is a repeat, summary, clarification, or follow-up that can be answered directly from the previous Assistant responses in the conversation history without searching the document database again.\n"
-            "3. 'rag': Use this if the user is asking about new facts, topics, or documents not found in the conversation history.\n"
-            "When in doubt, choose 'rag'."
-        )),
-        HumanMessage(content=(
-            f"Prior Conversation History:\n{history_context}\n\n"
-            f"New User Question: {question}"
-        ))
+        SystemMessage(
+            content=(
+                "Classify the user's question for a document Q&A assistant.\n"
+                "- 'chitchat': greetings or pleasantries.\n"
+                "- 'history': repeats, summaries, or clarifications answerable strictly from prior turns.\n"
+                "- 'rag': any new factual question requiring document lookup.\n"
+                "When in doubt, choose 'rag'."
+            )
+        ),
+        HumanMessage(content=f"Prior Conversation:\n{history_context}\n\nQuestion: {question}"),
     ]
-    
+
     try:
         classifier = router_llm.with_config(tags=["router"]).with_structured_output(RouteDecision)
         decision = await classifier.ainvoke(messages)
@@ -77,30 +76,26 @@ async def router_node(state: GraphState) -> dict:
 
 
 async def history_node(state: GraphState) -> dict:
-    """Answers follow-up / repeat / summary questions directly from conversation history (skipping vector retrieval)."""
+    """Answer follow-up questions directly from conversation history."""
     question = state["question"]
     history = state.get("chat_history", []) or []
-    
+
     messages = [
-        SystemMessage(content=(
-            "You are a helpful research assistant. Answer the user's question directly based on the "
-            "conversation history. Be concise, accurate, and helpful. Do not invent facts."
-        ))
+        SystemMessage(
+            content=(
+                "Answer the user's question concisely using only the conversation history. "
+                "Do not invent facts."
+            )
+        ),
+        *history,
+        HumanMessage(content=question),
     ]
-    messages.extend(history)
-    messages.append(HumanMessage(content=question))
-    
     response = await llm.with_config({"run_name": "final_generation"}).ainvoke(messages)
     answer = response.content
-    
-    persisted = [
-        HumanMessage(content=question),
-        AIMessage(content=answer),
-    ]
-    
+
     return {
         "answer": answer,
-        "chat_history": persisted,
+        "chat_history": _build_persisted_turn(question, answer),
         "context": [],
         "queries": [],
         "keywords": [],
@@ -109,70 +104,63 @@ async def history_node(state: GraphState) -> dict:
 
 
 async def chitchat_node(state: GraphState) -> dict:
-    """Fast-path generation for conversational queries (skips retrieval entirely)."""
+    """Handle conversational pleasantries without document retrieval."""
     question = state["question"]
     history = state.get("chat_history", []) or []
-    
+
     messages = [
-        SystemMessage(content="You are a helpful and friendly AI assistant. Keep your answer brief and conversational. You do not have access to external documents for this response.")
+        SystemMessage(
+            content="You are a concise, friendly assistant. Keep replies brief; no document context is loaded for this turn."
+        ),
+        *history,
+        HumanMessage(content=question),
     ]
-    messages.extend(history)
-    messages.append(HumanMessage(content=question))
-    
     response = await llm.with_config({"run_name": "final_generation"}).ainvoke(messages)
     answer = response.content
-    
-    persisted = [
-        HumanMessage(content=question),
-        AIMessage(content=answer),
-    ]
-    
+
     return {
         "answer": answer,
-        "chat_history": persisted,
+        "chat_history": _build_persisted_turn(question, answer),
         "context": [],
         "queries": [],
         "keywords": [],
         "num_candidates": 0,
     }
 
+
 async def rag_agent_node(state: GraphState) -> dict:
-    """Retrieves context and generates an answer in a single step."""
+    """Retrieve ranked chunks and generate a grounded answer."""
     question = state["question"]
     history = state.get("chat_history", []) or []
     user_id = state.get("user_id")
+    allow_shared = state.get("corpus_scope") == "shared"
 
-    # Fetch context concurrently
-    context_text, queries, keywords = await retrieve_docs_async(question, user_id)
-    
-    # Store raw context chunks for the UI response
-    found_docs = context_text != "No relevant documents found." and context_text != "No documents available (user not set)."
-    raw_contexts = [context_text] if found_docs else []
-
-    # Build prompt
-    augmented_question = (
-        f"Context:\n{context_text}\n\n"
-        f"Question: {question}"
+    chunks, queries, keywords, total_candidates = await retrieve_docs_async(
+        question, user_id, allow_shared=allow_shared
     )
 
-    messages = [SystemMessage(content=_SYSTEM_PROMPT)]
-    messages.extend(history)
-    messages.append(HumanMessage(content=augmented_question))
+    if chunks:
+        context_text = "\n\n---\n\n".join(f"Chunk {i + 1}: {c}" for i, c in enumerate(chunks))
+    elif not user_id and not allow_shared:
+        context_text = "No documents available (user not set)."
+    else:
+        context_text = "No relevant documents found."
 
-    # Single async LLM generation
+    system_prompt = RAG_SYSTEM_TEXT.format(context=context_text)
+    messages = [
+        SystemMessage(content=system_prompt),
+        *history,
+        HumanMessage(content=question),
+    ]
+
     response = await llm.with_config({"run_name": "final_generation"}).ainvoke(messages)
     answer = response.content
 
-    persisted = [
-        HumanMessage(content=question),
-        AIMessage(content=answer),
-    ]
-
     return {
         "answer": answer,
-        "chat_history": persisted,
-        "context": raw_contexts,
+        "chat_history": _build_persisted_turn(question, answer),
+        "context": chunks,
         "queries": queries,
         "keywords": keywords,
-        "num_candidates": len(raw_contexts),
+        "num_candidates": total_candidates,
     }

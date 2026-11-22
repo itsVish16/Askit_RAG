@@ -1,6 +1,7 @@
 import asyncio
 import pickle
 import random
+import threading
 from collections import OrderedDict
 from pathlib import Path
 
@@ -27,12 +28,13 @@ class FireworksReranker:
         self.api_key = api_key
         self.url = url
         self.model = model
+        self._client = httpx.Client(timeout=15.0)
 
     def rerank(self, query: str, texts: list[str], top_n: int = 5) -> list[str]:
         if not texts:
             return []
         if not self.api_key:
-            logger.warning("[reranker] FIREWORKS_RERANK_API_KEY is not set — returning original candidate order.")
+            logger.warning("[reranker] FIREWORKS_RERANK_API_KEY is not set — returning original order.")
             return texts[:top_n]
 
         headers = {
@@ -49,62 +51,61 @@ class FireworksReranker:
         }
 
         try:
-            with httpx.Client(timeout=15.0) as client:
-                response = client.post(self.url, headers=headers, json=payload)
-                if response.status_code != 200:
-                    logger.warning(
-                        f"[reranker] Fireworks API returned HTTP {response.status_code}: {response.text} — "
-                        "falling back to original order."
-                    )
-                    return texts[:top_n]
+            response = self._client.post(self.url, headers=headers, json=payload)
+            if response.status_code != 200:
+                logger.warning(
+                    f"[reranker] Fireworks API returned HTTP {response.status_code} — falling back to original order."
+                )
+                return texts[:top_n]
 
-                data = response.json()
-                results = data.get("data") or data.get("results") or []
-                if not results:
-                    return texts[:top_n]
+            data = response.json()
+            results = data.get("data") or data.get("results") or []
+            if not results:
+                return texts[:top_n]
 
-                sorted_results = sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True)
-                sorted_indices = [item["index"] for item in sorted_results if "index" in item]
-                ranked_docs = [texts[idx] for idx in sorted_indices if idx < len(texts)]
+            sorted_results = sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True)
+            sorted_indices = [item["index"] for item in sorted_results if "index" in item]
+            ranked_docs = [texts[idx] for idx in sorted_indices if idx < len(texts)]
 
-                for t in texts:
-                    if t not in ranked_docs and len(ranked_docs) < top_n:
-                        ranked_docs.append(t)
+            for t in texts:
+                if t not in ranked_docs and len(ranked_docs) < top_n:
+                    ranked_docs.append(t)
 
-                return ranked_docs[:top_n]
+            return ranked_docs[:top_n]
         except Exception as exc:
             logger.warning(f"[reranker] HTTP call failed: {type(exc).__name__}: {exc} — fallback to original order.")
             return texts[:top_n]
 
 
-# Reranker instance singleton
 reranker: FireworksReranker | None = None
 _reranker_initialized: bool = False
 
 
 class LRUCache:
     def __init__(self, capacity: int):
-        self.cache = OrderedDict()
+        self.cache: OrderedDict = OrderedDict()
         self.capacity = capacity
+        self._lock = threading.Lock()
 
     def get(self, key):
-        if key not in self.cache:
-            return None
-        self.cache.move_to_end(key)
-        return self.cache[key]
+        with self._lock:
+            if key not in self.cache:
+                return None
+            self.cache.move_to_end(key)
+            return self.cache[key]
 
     def put(self, key, value):
-        self.cache[key] = value
-        self.cache.move_to_end(key)
-        if len(self.cache) > self.capacity:
-            self.cache.popitem(last=False)
+        with self._lock:
+            self.cache[key] = value
+            self.cache.move_to_end(key)
+            if len(self.cache) > self.capacity:
+                self.cache.popitem(last=False)
 
 
 rerank_cache = LRUCache(10000)
 
 
 def get_reranker() -> FireworksReranker | None:
-    """Return the cached Fireworks cloud reranker client."""
     global reranker, _reranker_initialized
     if _reranker_initialized:
         return reranker
@@ -114,13 +115,12 @@ def get_reranker() -> FireworksReranker | None:
         url=settings.FIREWORKS_RERANK_URL,
         model=settings.RERANKER_MODEL_NAME,
     )
-    logger.info(f"[reranker] initialized Fireworks API reranker ({settings.RERANKER_MODEL_NAME}) OK.")
+    logger.info(f"[reranker] initialized Fireworks API reranker ({settings.RERANKER_MODEL_NAME}).")
     return reranker
 
 
 BM25_CACHE_DIR = Path("data/bm25_cache")
 
-# Memory caches (no longer keyed by k)
 _bm25_cache_global: BM25Retriever | None = None
 _user_bm25_cache: dict[str, BM25Retriever | None] = {}
 _global_bm25_initialized: bool = False
@@ -137,7 +137,7 @@ async def _scroll_with_retry(scroll_fn, *, max_attempts: int = 4, base_delay: fl
             status = getattr(exc, "status_code", None)
             if status is not None and 400 <= status < 500 and status != 429:
                 break
-            delay = min(8.0, base_delay * (2 ** attempt)) * random.uniform(0.5, 1.0)
+            delay = min(8.0, base_delay * (2**attempt)) * random.uniform(0.5, 1.0)
             logger.warning(
                 f"[qdrant retry] attempt={attempt + 1}/{max_attempts} "
                 f"status={status} err={type(exc).__name__}: {exc} — sleeping {delay:.2f}s"
@@ -207,26 +207,24 @@ async def _fetch_user_documents(user_id: str, batch_size: int = 256) -> list[Doc
 
 
 async def _load_or_build_bm25(user_id: str | None = None) -> BM25Retriever | None:
-    cache_key = user_id if user_id else "global"
-    
-    # 1. Memory Check
     global _bm25_cache_global, _global_bm25_initialized
+    cache_key = user_id if user_id else "global"
+
     if user_id:
         if user_id in _user_bm25_cache:
             return _user_bm25_cache[user_id]
-    else:
-        if _global_bm25_initialized:
-            return _bm25_cache_global
-            
-    # 2. Disk Check
+    elif _global_bm25_initialized:
+        return _bm25_cache_global
+
     BM25_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = BM25_CACHE_DIR / f"{cache_key}.pkl"
-    
+
     if cache_file.exists():
         try:
             def load_pickle():
                 with open(cache_file, "rb") as f:
                     return pickle.load(f)
+
             retriever = await asyncio.to_thread(load_pickle)
             logger.info(f"[bm25] loaded {cache_key} index from disk cache.")
             if user_id:
@@ -237,10 +235,8 @@ async def _load_or_build_bm25(user_id: str | None = None) -> BM25Retriever | Non
             return retriever
         except Exception as exc:
             logger.error(f"[bm25] disk cache load failed for {cache_key}: {exc}")
-            
-    # 3. Build
+
     documents = await _fetch_user_documents(user_id) if user_id else await _fetch_all_documents()
-    
     if not documents:
         if user_id:
             _user_bm25_cache[user_id] = None
@@ -248,40 +244,45 @@ async def _load_or_build_bm25(user_id: str | None = None) -> BM25Retriever | Non
             _bm25_cache_global = None
             _global_bm25_initialized = True
         return None
-        
+
     retriever = BM25Retriever.from_documents(documents)
-    retriever.k = 100 # Allow generous slicing by caller
-    
-    # 4. Save
+    retriever.k = 100
+
     try:
         def save_pickle():
             with open(cache_file, "wb") as f:
                 pickle.dump(retriever, f)
+
         await asyncio.to_thread(save_pickle)
     except Exception as exc:
         logger.error(f"[bm25] disk cache save failed for {cache_key}: {exc}")
-        
+
     if user_id:
         _user_bm25_cache[user_id] = retriever
     else:
         _bm25_cache_global = retriever
         _global_bm25_initialized = True
-        
+
     return retriever
 
 
 async def get_bm25_retriever(k: int = 3) -> BM25Retriever | None:
-    # `k` parameter is kept for backward compatibility in imports, but we ignore it for caching
     return await _load_or_build_bm25(user_id=None)
+
 
 async def get_user_bm25_retriever(user_id: str, k: int = 3) -> BM25Retriever | None:
     return await _load_or_build_bm25(user_id=user_id)
 
 
-def invalidate_user_bm25_cache(user_id: str):
-    """Called by the ingest worker when new documents are added to a user's index."""
-    _user_bm25_cache.pop(user_id, None)
-        
+def invalidate_user_bm25_cache(user_id: str) -> None:
+    """Invalidate memory and disk BM25 cache for a user (or 'global')."""
+    global _bm25_cache_global, _global_bm25_initialized
+    if user_id == "global":
+        _bm25_cache_global = None
+        _global_bm25_initialized = False
+    else:
+        _user_bm25_cache.pop(user_id, None)
+
     cache_file = BM25_CACHE_DIR / f"{user_id}.pkl"
     if cache_file.exists():
         try:
@@ -295,18 +296,13 @@ async def bm25_candidates_from_keywords(
 ) -> list[str]:
     if not keywords:
         return []
-        
     bm25 = await _load_or_build_bm25(user_id=user_id)
     if bm25 is None:
         return []
-        
-    candidates: list[str] = []
+
     tasks = [bm25.ainvoke(q) for q in [" ".join(keywords), *keywords]]
     results = await asyncio.gather(*tasks)
-    
-    for docs in results:
-        candidates.extend(doc.page_content for doc in docs[:k])
-        
+    candidates = [doc.page_content for docs in results for doc in docs[:k]]
     return list(dict.fromkeys(candidates))
 
 
@@ -318,7 +314,7 @@ async def _dense_safe(query: str, k: int, user_id: str | None) -> list[Document]
     except Exception as exc:
         logger.warning(
             f"[qdrant] dense retrieval failed (k={k}, user_id={user_id}): "
-            f"{type(exc).__name__}: {exc} — returning [] (degraded)."
+            f"{type(exc).__name__}: {exc} — returning []."
         )
         return []
 
@@ -328,23 +324,16 @@ async def retrieve_candidates(
 ) -> list[str]:
     dense_task = asyncio.create_task(_dense_safe(query, k=k_retrieve, user_id=user_id))
     bm25_task = asyncio.create_task(_load_or_build_bm25(user_id=user_id))
-        
     dense_docs, bm25 = await asyncio.gather(dense_task, bm25_task)
-    
-    if bm25 is not None:
-        bm25_docs = (await bm25.ainvoke(query))[:k_retrieve]
-    else:
-        bm25_docs = []
-        
-    unique = {doc.page_content for doc in list(dense_docs) + list(bm25_docs)}
-    return list(unique)
+
+    bm25_docs = (await bm25.ainvoke(query))[:k_retrieve] if bm25 is not None else []
+    return list(dict.fromkeys(doc.page_content for doc in [*dense_docs, *bm25_docs]))
 
 
 def rerank_texts(query: str, texts: list[str], k_final: int = 5) -> list[str]:
     if not texts:
         return []
 
-    # 1. Check LRU Cache
     cache_key = (query, tuple(texts), k_final)
     cached = rerank_cache.get(cache_key)
     if cached is not None:
